@@ -424,6 +424,7 @@ async def poll_api(token: str) -> dict | None:
         "wr": reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset")),
         "st": hdr("anthropic-ratelimit-unified-5h-status", "unknown"),
         "ok": True,
+        "acct": read_account_email() or "",   # which account this reading is for
     }
     add_clock_fields(payload)   # adds "t" + "tf" iff the config opts in
     return payload
