@@ -130,6 +130,57 @@ def read_token() -> str | None:
     return _read_token_file()
 
 
+# --- Account identity (which account are we actually polling?) ---------------
+#
+# The OAuth token is opaque, so it can't tell us whose account it is. Claude
+# Code records the logged-in account in ~/.claude.json (written alongside the
+# Keychain/credentials token on login and on account switch). We surface that
+# email so the logs say WHICH account each reading came from, and warn loudly
+# if it changes mid-run — otherwise a silent account switch just looks like the
+# usage numbers inexplicably jumped.
+CLAUDE_CODE_CONFIG = Path.home() / ".claude.json"
+_account_cache: dict = {"mtime": None, "email": None}
+_last_logged_email: str | None = None
+
+
+def read_account_email() -> str | None:
+    """Email of the account the current token belongs to, or None if unknown.
+
+    Cached on the config file's mtime so we don't re-parse a possibly multi-MB
+    JSON file every poll — it only changes on login / account switch.
+    """
+    try:
+        mtime = CLAUDE_CODE_CONFIG.stat().st_mtime
+    except OSError:
+        return None
+    if _account_cache["mtime"] == mtime:
+        return _account_cache["email"]
+    email = None
+    try:
+        data = json.loads(CLAUDE_CODE_CONFIG.read_text())
+        acct = data.get("oauthAccount")
+        if isinstance(acct, dict) and isinstance(acct.get("emailAddress"), str):
+            email = acct["emailAddress"]
+    except (OSError, json.JSONDecodeError):
+        email = None
+    _account_cache["mtime"] = mtime
+    _account_cache["email"] = email
+    return email
+
+
+def log_account_if_changed() -> None:
+    """Log the active account once, then again only when it changes."""
+    global _last_logged_email
+    email = read_account_email()
+    if email == _last_logged_email:
+        return
+    if _last_logged_email is None:
+        log(f"Account: {email or 'unknown (is Claude Code logged in?)'}")
+    else:
+        log(f"Account CHANGED: {_last_logged_email} -> {email or 'unknown'}")
+    _last_logged_email = email
+
+
 def load_cached_address() -> str | None:
     if not SAVED_ADDR_FILE.exists():
         return None
@@ -546,6 +597,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
             elapsed = now - last_poll
             if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
                 session.refresh_requested.clear()
+                log_account_if_changed()
                 token = read_token()
                 if not token:
                     log("No token; skipping poll")
@@ -586,6 +638,7 @@ async def main() -> None:
 
     log("=== Claude Usage Tracker Daemon (BLE, macOS) ===")
     log(f"Poll interval: {POLL_INTERVAL}s")
+    log_account_if_changed()
 
     backoff = 1
     skip_addr: str | None = None  # macOS: a peripheral to skip for one cycle
