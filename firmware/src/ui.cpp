@@ -127,13 +127,13 @@ static char s_account[64] = ""; // account email from the daemon payload (shown 
 #define ACCT_BAR_W      280
 static lv_obj_t* acct_container;
 static lv_obj_t* acct_title;
-static lv_obj_t* acct_rows[MAX_ACCOUNTS];
-static lv_obj_t* acct_star[MAX_ACCOUNTS];
+static lv_obj_t* acct_rows[MAX_ACCOUNTS];      // the card panels
 static lv_obj_t* acct_email[MAX_ACCOUNTS];
 static lv_obj_t* acct_used[MAX_ACCOUNTS];
 static lv_obj_t* acct_bar[MAX_ACCOUNTS];
 static lv_obj_t* acct_marker[MAX_ACCOUNTS];
-static lv_obj_t* acct_left[MAX_ACCOUNTS];
+static lv_obj_t* acct_left[MAX_ACCOUNTS];       // "4d 1h left"
+static lv_obj_t* acct_elapsed[MAX_ACCOUNTS];    // "42% through"
 
 // ---- Battery indicator (shared, on top) ----
 static lv_obj_t* battery_img;
@@ -431,52 +431,49 @@ static void init_accounts_screen(lv_obj_t* scr) {
     lv_label_set_text(acct_title, "Accounts");
     lv_obj_set_style_text_font(acct_title, &font_tiempos_34, 0);
     lv_obj_set_style_text_color(acct_title, COL_TEXT, 0);
-    lv_obj_align(acct_title, LV_ALIGN_TOP_MID, 0, L.title_y);
+    lv_obj_align(acct_title, LV_ALIGN_TOP_MID, 0, 14);
 
+    // One card per account, matching the usage screen's panels. Inner padding
+    // 20px; bar spans the card width. Card height is set in ui_update_accounts.
+    const int pad = 20;
+    const int bar_w = L.content_w - 2 * pad;
     for (int i = 0; i < MAX_ACCOUNTS; i++) {
-        lv_obj_t* row = lv_obj_create(acct_container);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_all(row, 0, 0);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_width(row, L.content_w);
-        lv_obj_set_x(row, L.margin);
-        acct_rows[i] = row;
+        lv_obj_t* card = lv_obj_create(acct_container);
+        lv_obj_set_width(card, L.content_w);
+        lv_obj_set_x(card, L.margin);
+        lv_obj_set_style_bg_color(card, COL_PANEL, 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(card, 18, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_border_color(card, COL_ACCENT, 0);
+        lv_obj_set_style_pad_all(card, 0, 0);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        acct_rows[i] = card;
 
-        lv_obj_t* star = lv_obj_create(row);       // accent dot = recommended
-        lv_obj_set_size(star, 14, 14);
-        lv_obj_set_style_radius(star, 7, 0);
-        lv_obj_set_style_bg_color(star, COL_ACCENT, 0);
-        lv_obj_set_style_bg_opa(star, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(star, 0, 0);
-        lv_obj_clear_flag(star, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_align(star, LV_ALIGN_TOP_LEFT, 2, 9);
-        acct_star[i] = star;
-
-        lv_obj_t* email = lv_label_create(row);
+        lv_obj_t* email = lv_label_create(card);
         lv_label_set_long_mode(email, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(email, 290);
-        lv_obj_set_style_text_font(email, &font_styrene_20, 0);
+        lv_obj_set_width(email, L.content_w - 2 * pad - 80);
+        lv_obj_set_style_text_font(email, &font_styrene_24, 0);
         lv_obj_set_style_text_color(email, COL_TEXT, 0);
-        lv_obj_align(email, LV_ALIGN_TOP_LEFT, 30, 2);
+        lv_obj_align(email, LV_ALIGN_TOP_LEFT, pad, 16);
         acct_email[i] = email;
 
-        lv_obj_t* used = lv_label_create(row);
-        lv_obj_set_style_text_font(used, &font_styrene_24, 0);
-        lv_obj_align(used, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_t* used = lv_label_create(card);
+        lv_obj_set_style_text_font(used, &font_styrene_28, 0);
+        lv_obj_align(used, LV_ALIGN_TOP_RIGHT, -pad, 12);
         acct_used[i] = used;
 
-        lv_obj_t* bar = lv_bar_create(row);
-        lv_obj_set_size(bar, ACCT_BAR_W, 16);
-        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, 0, 40);
+        lv_obj_t* bar = lv_bar_create(card);
+        lv_obj_set_size(bar, bar_w, 18);
+        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, pad, 58);
         lv_obj_set_style_bg_color(bar, COL_BAR_BG, LV_PART_MAIN);
-        lv_obj_set_style_radius(bar, 8, LV_PART_MAIN);
-        lv_obj_set_style_radius(bar, 8, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(bar, 9, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, 9, LV_PART_INDICATOR);
         lv_bar_set_range(bar, 0, 100);
         acct_bar[i] = bar;
 
-        lv_obj_t* marker = lv_obj_create(row);     // tick = where the clock is
-        lv_obj_set_size(marker, 3, 24);
+        lv_obj_t* marker = lv_obj_create(card);    // tick = where the clock is
+        lv_obj_set_size(marker, 3, 28);
         lv_obj_set_style_bg_color(marker, COL_TEXT, 0);
         lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(marker, 0, 0);
@@ -484,13 +481,19 @@ static void init_accounts_screen(lv_obj_t* scr) {
         lv_obj_clear_flag(marker, LV_OBJ_FLAG_SCROLLABLE);
         acct_marker[i] = marker;
 
-        lv_obj_t* left = lv_label_create(row);
+        lv_obj_t* left = lv_label_create(card);    // "4d 1h left"
         lv_obj_set_style_text_font(left, &font_styrene_16, 0);
         lv_obj_set_style_text_color(left, COL_DIM, 0);
-        lv_obj_align(left, LV_ALIGN_TOP_LEFT, ACCT_BAR_W + 12, 44);
+        lv_obj_align(left, LV_ALIGN_TOP_LEFT, pad, 90);
         acct_left[i] = left;
 
-        lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);  // ui_update_accounts reveals
+        lv_obj_t* el = lv_label_create(card);      // "42% through"
+        lv_obj_set_style_text_font(el, &font_styrene_16, 0);
+        lv_obj_set_style_text_color(el, COL_DIM, 0);
+        lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -pad, 90);
+        acct_elapsed[i] = el;
+
+        lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN); // ui_update_accounts reveals
     }
 
     lv_obj_add_flag(acct_container, LV_OBJ_FLAG_HIDDEN);
@@ -582,17 +585,20 @@ void ui_update_accounts(const AccountsData* data) {
         if (score > best) { best = score; rec = i; }
     }
 
-    int title_bottom = L.title_y + 52;
-    int avail = L.scr_h - title_bottom - 16;
-    int row_h = avail / (n > 0 ? n : 1);
-    if (row_h > 132) row_h = 132;
+    const int pad = 20;
+    const int bar_w = L.content_w - 2 * pad;
+    int title_bottom = 60;
+    int gap = 12;
+    int avail = L.scr_h - title_bottom - 12;
+    int card_h = (avail - gap * (n - 1)) / (n > 0 ? n : 1);
+    if (card_h > 132) card_h = 132;
 
     for (int i = 0; i < MAX_ACCOUNTS; i++) {
         if (i >= n) { lv_obj_add_flag(acct_rows[i], LV_OBJ_FLAG_HIDDEN); continue; }
         const Account* a = &data->accounts[i];
         lv_obj_clear_flag(acct_rows[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_y(acct_rows[i], title_bottom + i * row_h);
-        lv_obj_set_height(acct_rows[i], row_h);
+        lv_obj_set_y(acct_rows[i], title_bottom + i * (card_h + gap));
+        lv_obj_set_height(acct_rows[i], card_h);
 
         lv_label_set_text(acct_email[i], a->email);
         lv_label_set_text_fmt(acct_used[i], "%d%%", a->used_pct);
@@ -609,15 +615,16 @@ void ui_update_accounts(const AccountsData* data) {
         lv_obj_set_style_bg_color(acct_bar[i], c, LV_PART_INDICATOR);
         lv_obj_set_style_text_color(acct_used[i], c, 0);
 
-        int mx = elapsed * ACCT_BAR_W / 100;        // clock marker position
-        lv_obj_align(acct_marker[i], LV_ALIGN_TOP_LEFT, mx - 1, 36);
+        int mx = pad + elapsed * bar_w / 100;       // clock marker over the bar
+        lv_obj_align(acct_marker[i], LV_ALIGN_TOP_LEFT, mx - 1, 53);
 
         char buf[24];
         format_days_left(a->reset_mins, buf, sizeof(buf));
         lv_label_set_text(acct_left[i], buf);
+        lv_label_set_text_fmt(acct_elapsed[i], "%d%% through", elapsed);
 
-        if (i == rec) lv_obj_clear_flag(acct_star[i], LV_OBJ_FLAG_HIDDEN);
-        else          lv_obj_add_flag(acct_star[i], LV_OBJ_FLAG_HIDDEN);
+        // Recommendation: accent border on the most use-it-or-lose-it card.
+        lv_obj_set_style_border_width(acct_rows[i], i == rec ? 3 : 0, 0);
     }
 }
 
