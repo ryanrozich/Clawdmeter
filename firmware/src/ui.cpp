@@ -490,44 +490,7 @@ static void update_view_state(void) {
                       LV_OBJ_FLAG_HIDDEN);
 }
 
-// ---- OLED burn-in mitigation: slow pixel-shift -----------------------------
-// AMOLED ages per-subpixel with cumulative lit time, so the static bright bits
-// (logo, "Current"/"Weekly" pills, labels, bar tracks) would slowly etch in on
-// an always-on desk display. Nudge ALL top-level content a few px on a slow
-// closed walk so no element sits on the exact same subpixels for long. The
-// true-black background means most of the panel is off and never ages; this
-// covers the rest. Imperceptible: <=3px steps once a minute.
-#define BURNIN_SHIFT_MS 60000   // advance one step every 60s
-// EVEN offsets only. The CO5300 requires even-aligned flush regions
-// (display_hal_round_area / rounder_cb), so an odd shift can leave a 1px
-// column unrepainted at the edge — seen in the wild as a faint light column.
-static const int8_t burnin_dx[] = { -2, 0, 2, 2, 2, 0, -2, -2 };
-static const int8_t burnin_dy[] = { -2, -2, -2, 0, 2, 2, 2, 0 };
-#define BURNIN_STEPS (sizeof(burnin_dx) / sizeof(burnin_dx[0]))
-static uint32_t burnin_last_ms = 0;
-static uint8_t burnin_idx = 0;
-
-static void burnin_apply(int dx, int dy) {
-    lv_obj_t* tops[] = { usage_container, logo_img, battery_img, splash_get_root() };
-    for (lv_obj_t* o : tops) {
-        if (!o) continue;
-        lv_obj_set_style_translate_x(o, dx, 0);
-        lv_obj_set_style_translate_y(o, dy, 0);
-    }
-    // translate only invalidates the moved objects' new boxes; the columns
-    // they vacate (and partial-render strip seams) can retain stale lit
-    // pixels. Force a clean full-screen repaint so the shift leaves nothing.
-    lv_obj_invalidate(lv_screen_active());
-}
-
 void ui_tick_anim(void) {
-    uint32_t tnow = lv_tick_get();
-    if (tnow - burnin_last_ms >= BURNIN_SHIFT_MS) {
-        burnin_last_ms = tnow;
-        burnin_idx = (burnin_idx + 1) % BURNIN_STEPS;
-        burnin_apply(burnin_dx[burnin_idx], burnin_dy[burnin_idx]);
-    }
-
     if (current_screen != SCREEN_USAGE) return;
     update_view_state();
     if (view_state == 1) splash_mini_tick();   // animate the sleeping creature on the idle screen
