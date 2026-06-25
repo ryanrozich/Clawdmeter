@@ -498,8 +498,11 @@ static void update_view_state(void) {
 // true-black background means most of the panel is off and never ages; this
 // covers the rest. Imperceptible: <=3px steps once a minute.
 #define BURNIN_SHIFT_MS 60000   // advance one step every 60s
-static const int8_t burnin_dx[] = { -3, 0, 3, 3, 3, 0, -3, -3 };
-static const int8_t burnin_dy[] = { -3, -3, -3, 0, 3, 3, 3, 0 };
+// EVEN offsets only. The CO5300 requires even-aligned flush regions
+// (display_hal_round_area / rounder_cb), so an odd shift can leave a 1px
+// column unrepainted at the edge — seen in the wild as a faint light column.
+static const int8_t burnin_dx[] = { -2, 0, 2, 2, 2, 0, -2, -2 };
+static const int8_t burnin_dy[] = { -2, -2, -2, 0, 2, 2, 2, 0 };
 #define BURNIN_STEPS (sizeof(burnin_dx) / sizeof(burnin_dx[0]))
 static uint32_t burnin_last_ms = 0;
 static uint8_t burnin_idx = 0;
@@ -511,6 +514,10 @@ static void burnin_apply(int dx, int dy) {
         lv_obj_set_style_translate_x(o, dx, 0);
         lv_obj_set_style_translate_y(o, dy, 0);
     }
+    // translate only invalidates the moved objects' new boxes; the columns
+    // they vacate (and partial-render strip seams) can retain stale lit
+    // pixels. Force a clean full-screen repaint so the shift leaves nothing.
+    lv_obj_invalidate(lv_screen_active());
 }
 
 void ui_tick_anim(void) {
