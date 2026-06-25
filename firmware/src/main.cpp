@@ -21,6 +21,7 @@
 #include "hal/imu_hal.h"
 
 static UsageData usage = {};
+static AccountsData accounts = {};
 
 // ---- LVGL draw buffers (partial render mode) ----
 // PSRAM-equipped boards (S3) can comfortably hold larger strips. PSRAM-free
@@ -116,6 +117,25 @@ static bool parse_json(const char* json, UsageData* out) {
     out->ok = doc["ok"] | false;
     out->valid = true;
     return true;
+}
+
+// Parse the daemon's {"accts":[{"e","u","wr"},...]} message into AccountsData.
+static bool parse_accounts(const char* json, AccountsData* out) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json)) return false;
+    JsonArray arr = doc["accts"].as<JsonArray>();
+    if (arr.isNull()) return false;
+    out->count = 0;
+    for (JsonObject a : arr) {
+        if (out->count >= MAX_ACCOUNTS) break;
+        Account* ac = &out->accounts[out->count];
+        strlcpy(ac->email, a["e"] | "", sizeof(ac->email));
+        ac->used_pct = a["u"] | 0;
+        ac->reset_mins = a["wr"] | -1;
+        out->count++;
+    }
+    out->valid = out->count > 0;
+    return out->valid;
 }
 
 // ---- Serial command buffer ----
@@ -223,7 +243,7 @@ void setup() {
     ui_init();
     ui_update_ble_status(ble_get_state(), ble_get_device_name(), ble_get_mac_address());
     ui_update_battery(power_hal_battery_pct(), power_hal_is_charging());
-    ui_show_screen(SCREEN_USAGE);  // boot to the usage numbers; tap/PWR toggles the splash animation
+    ui_show_screen(SCREEN_USAGE);  // boot to the usage numbers; PWR cycles usage -> accounts -> splash
 
     Serial.printf("Dashboard ready (%s, %dx%d), waiting for data on BLE...\n",
         board_caps().name, W, H);
@@ -332,9 +352,9 @@ void loop() {
 
         if (power_hal_pwr_pressed()) {
             if (!idle_consume_wake_press()) {
-                // PWR toggles usage <-> splash animation. (Touch no longer
+                // PWR cycles usage -> accounts -> splash. (Touch no longer
                 // toggles — an accidental brush of the panel kept flipping it.)
-                ui_toggle_splash();
+                ui_cycle_screen();
             }
         }
 
@@ -360,7 +380,15 @@ void loop() {
     check_serial_cmd();
 
     if (ble_has_data()) {
-        if (parse_json(ble_get_data(), &usage)) {
+        const char* d = ble_get_data();
+        if (strstr(d, "\"accts\"")) {                 // multi-account message
+            if (parse_accounts(d, &accounts)) {
+                ui_update_accounts(&accounts);
+                ble_send_ack();
+            } else {
+                ble_send_nack();
+            }
+        } else if (parse_json(d, &usage)) {           // single-account usage
             int g_before = usage_rate_group();
             usage_rate_sample(usage.session_pct);
             int g_after = usage_rate_group();

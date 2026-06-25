@@ -31,6 +31,10 @@ POLL_INTERVAL = 60
 TICK = 5
 SCAN_TIMEOUT = 8.0
 CONNECT_TIMEOUT = 20.0
+ACCOUNTS_POLL_INTERVAL = 300            # multi-account screen: 5 min (7d barely moves)
+ACCOUNTS_WINDOW_MIN = 7 * 24 * 60       # 7-day limit window length
+SWAP_BACKUP = Path.home() / ".claude-swap-backup"
+SWAP_BIN = Path.home() / ".local" / "bin" / "claude-swap"
 
 # macOS: token lives in Keychain (service "Claude Code-credentials").
 # Linux: token lives in ~/.claude/.credentials.json.
@@ -179,6 +183,87 @@ def log_account_if_changed() -> None:
     else:
         log(f"Account CHANGED: {_last_logged_email} -> {email or 'unknown'}")
     _last_logged_email = email
+
+
+# --- Multi-account pacing (claude-swap) -------------------------------------
+#
+# claude-swap manages several Claude accounts and caches each one's usage in
+# ~/.claude-swap-backup/cache/usage.json (per slot: seven_day pct + countdown),
+# with slot->email in sequence.json. The per-account OAuth tokens are encrypted
+# on disk, so rather than poll each account directly we shell out to
+# `claude-swap --list` (it re-polls every account and rewrites that cache),
+# then read the JSON. Drives the device's "Accounts" pacing screen — refreshed
+# slowly because 7d usage barely moves.
+def _swap_bin() -> str | None:
+    if SWAP_BIN.exists():
+        return str(SWAP_BIN)
+    return shutil.which("claude-swap")
+
+
+async def refresh_accounts_cache() -> None:
+    """Best-effort: run `claude-swap --list` so usage.json is current."""
+    binary = _swap_bin()
+    if not binary:
+        return
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            binary, "--list",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=30)
+    except (OSError, asyncio.TimeoutError) as e:
+        log(f"claude-swap refresh skipped: {e}")
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
+
+def _parse_countdown(s: str) -> int | None:
+    """'5d 1h' / '4h 51m' / '21m' -> total minutes."""
+    if not s:
+        return None
+    mins = 0
+    for n, unit in re.findall(r"(\d+)\s*([dhm])", s):
+        mins += int(n) * {"d": 1440, "h": 60, "m": 1}[unit]
+    return mins
+
+
+def read_accounts() -> list[dict]:
+    """Per-account 7d pacing from claude-swap's cache, in slot order.
+
+    Each entry: {e: email, u: used_pct, wr: minutes-until-7d-reset}. The reset
+    countdown is aged forward from when claude-swap measured it so it stays
+    accurate even if the cache is a little stale.
+    """
+    try:
+        seq = json.loads((SWAP_BACKUP / "sequence.json").read_text())
+        cache = json.loads((SWAP_BACKUP / "cache" / "usage.json").read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        log(f"accounts: cache unreadable: {e}")
+        return []
+    measured_at = cache.get("timestamp", 0)
+    data = cache.get("data", {})
+    now = time.time()
+    out: list[dict] = []
+    for slot in seq.get("sequence", []):
+        info = seq.get("accounts", {}).get(str(slot))
+        if not info:
+            continue
+        seven = data.get(str(slot), {}).get("seven_day", {})
+        remaining = _parse_countdown(seven.get("countdown", ""))
+        if remaining is None:
+            continue
+        remaining = max(0, int(remaining - (now - measured_at) / 60))
+        out.append({
+            "e": info.get("email", "?"),
+            "u": int(round(seven.get("pct", 0))),
+            "wr": remaining,
+        })
+    return out
 
 
 def load_cached_address() -> str | None:
@@ -591,6 +676,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
     await session.setup_refresh_subscription()
 
     last_poll = 0.0
+    last_accounts_poll = 0.0
     used_successfully = False
     try:
         while client.is_connected and not stop_event.is_set():
@@ -608,6 +694,15 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
                         if await session.write_payload(payload):
                             last_poll = time.time()
                             used_successfully = True
+
+            # Multi-account pacing screen — refreshed slowly and sent as its
+            # own {"accts":[...]} message (the firmware routes on that key).
+            if now - last_accounts_poll >= ACCOUNTS_POLL_INTERVAL:
+                last_accounts_poll = now
+                await refresh_accounts_cache()
+                accts = read_accounts()
+                if accts:
+                    await session.write_payload({"accts": accts})
 
             try:
                 await asyncio.wait_for(session.refresh_requested.wait(), timeout=TICK)

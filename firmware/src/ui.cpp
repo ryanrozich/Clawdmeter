@@ -122,6 +122,19 @@ static lv_obj_t* lbl_weekly_reset;
 static lv_obj_t* lbl_anim;      // status line: connection state + whimsical idle
 static char s_account[64] = ""; // account email from the daemon payload (shown in the rotation)
 
+// ---- Accounts pacing screen ----
+#define ACCT_WINDOW_MIN 10080   // 7-day limit window
+#define ACCT_BAR_W      280
+static lv_obj_t* acct_container;
+static lv_obj_t* acct_title;
+static lv_obj_t* acct_rows[MAX_ACCOUNTS];
+static lv_obj_t* acct_star[MAX_ACCOUNTS];
+static lv_obj_t* acct_email[MAX_ACCOUNTS];
+static lv_obj_t* acct_used[MAX_ACCOUNTS];
+static lv_obj_t* acct_bar[MAX_ACCOUNTS];
+static lv_obj_t* acct_marker[MAX_ACCOUNTS];
+static lv_obj_t* acct_left[MAX_ACCOUNTS];
+
 // ---- Battery indicator (shared, on top) ----
 static lv_obj_t* battery_img;
 static lv_obj_t* logo_img;
@@ -405,6 +418,84 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_align(lbl_anim, LV_ALIGN_BOTTOM_MID, 0, -15);
 }
 
+static void init_accounts_screen(lv_obj_t* scr) {
+    acct_container = lv_obj_create(scr);
+    lv_obj_set_size(acct_container, L.scr_w, L.scr_h);
+    lv_obj_set_pos(acct_container, 0, 0);
+    lv_obj_set_style_bg_opa(acct_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(acct_container, 0, 0);
+    lv_obj_set_style_pad_all(acct_container, 0, 0);
+    lv_obj_clear_flag(acct_container, LV_OBJ_FLAG_SCROLLABLE);
+
+    acct_title = lv_label_create(acct_container);
+    lv_label_set_text(acct_title, "Accounts");
+    lv_obj_set_style_text_font(acct_title, &font_tiempos_34, 0);
+    lv_obj_set_style_text_color(acct_title, COL_TEXT, 0);
+    lv_obj_align(acct_title, LV_ALIGN_TOP_MID, 0, L.title_y);
+
+    for (int i = 0; i < MAX_ACCOUNTS; i++) {
+        lv_obj_t* row = lv_obj_create(acct_container);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_width(row, L.content_w);
+        lv_obj_set_x(row, L.margin);
+        acct_rows[i] = row;
+
+        lv_obj_t* star = lv_obj_create(row);       // accent dot = recommended
+        lv_obj_set_size(star, 14, 14);
+        lv_obj_set_style_radius(star, 7, 0);
+        lv_obj_set_style_bg_color(star, COL_ACCENT, 0);
+        lv_obj_set_style_bg_opa(star, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(star, 0, 0);
+        lv_obj_clear_flag(star, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(star, LV_ALIGN_TOP_LEFT, 2, 9);
+        acct_star[i] = star;
+
+        lv_obj_t* email = lv_label_create(row);
+        lv_label_set_long_mode(email, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(email, 290);
+        lv_obj_set_style_text_font(email, &font_styrene_20, 0);
+        lv_obj_set_style_text_color(email, COL_TEXT, 0);
+        lv_obj_align(email, LV_ALIGN_TOP_LEFT, 30, 2);
+        acct_email[i] = email;
+
+        lv_obj_t* used = lv_label_create(row);
+        lv_obj_set_style_text_font(used, &font_styrene_24, 0);
+        lv_obj_align(used, LV_ALIGN_TOP_RIGHT, 0, 0);
+        acct_used[i] = used;
+
+        lv_obj_t* bar = lv_bar_create(row);
+        lv_obj_set_size(bar, ACCT_BAR_W, 16);
+        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, 0, 40);
+        lv_obj_set_style_bg_color(bar, COL_BAR_BG, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, 8, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, 8, LV_PART_INDICATOR);
+        lv_bar_set_range(bar, 0, 100);
+        acct_bar[i] = bar;
+
+        lv_obj_t* marker = lv_obj_create(row);     // tick = where the clock is
+        lv_obj_set_size(marker, 3, 24);
+        lv_obj_set_style_bg_color(marker, COL_TEXT, 0);
+        lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(marker, 0, 0);
+        lv_obj_set_style_radius(marker, 0, 0);
+        lv_obj_clear_flag(marker, LV_OBJ_FLAG_SCROLLABLE);
+        acct_marker[i] = marker;
+
+        lv_obj_t* left = lv_label_create(row);
+        lv_obj_set_style_text_font(left, &font_styrene_16, 0);
+        lv_obj_set_style_text_color(left, COL_DIM, 0);
+        lv_obj_align(left, LV_ALIGN_TOP_LEFT, ACCT_BAR_W + 12, 44);
+        acct_left[i] = left;
+
+        lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);  // ui_update_accounts reveals
+    }
+
+    lv_obj_add_flag(acct_container, LV_OBJ_FLAG_HIDDEN);
+}
+
 // ======== Public API ========
 
 void ui_init(void) {
@@ -418,6 +509,7 @@ void ui_init(void) {
     init_battery_icons();
 
     init_usage_screen(scr);
+    init_accounts_screen(scr);
     splash_init(scr);
 
     logo_img = lv_image_create(scr);
@@ -465,6 +557,68 @@ void ui_update(const UsageData* data) {
 
     // Account email: shown in the bottom status-line rotation (ui_tick_anim).
     strlcpy(s_account, data->account, sizeof(s_account));
+}
+
+static void format_days_left(int mins, char* buf, size_t len) {
+    if (mins < 0)            snprintf(buf, len, "--");
+    else if (mins >= 1440)   snprintf(buf, len, "%dd %dh left", mins / 1440, (mins % 1440) / 60);
+    else if (mins >= 60)     snprintf(buf, len, "%dh left", mins / 60);
+    else                     snprintf(buf, len, "%dm left", mins);
+}
+
+void ui_update_accounts(const AccountsData* data) {
+    if (!data->valid) return;
+    int n = data->count > MAX_ACCOUNTS ? MAX_ACCOUNTS : data->count;
+
+    // Recommendation: most "use-it-or-lose-it" = unused credits ÷ time left.
+    // High unused % with little time left = those weekly credits are about to
+    // reset unused, so burn them first.
+    int rec = -1;
+    float best = -1.0f;
+    for (int i = 0; i < n; i++) {
+        float days = data->accounts[i].reset_mins / 1440.0f;
+        if (days < 0.25f) days = 0.25f;
+        float score = (100.0f - data->accounts[i].used_pct) / days;
+        if (score > best) { best = score; rec = i; }
+    }
+
+    int title_bottom = L.title_y + 52;
+    int avail = L.scr_h - title_bottom - 16;
+    int row_h = avail / (n > 0 ? n : 1);
+    if (row_h > 132) row_h = 132;
+
+    for (int i = 0; i < MAX_ACCOUNTS; i++) {
+        if (i >= n) { lv_obj_add_flag(acct_rows[i], LV_OBJ_FLAG_HIDDEN); continue; }
+        const Account* a = &data->accounts[i];
+        lv_obj_clear_flag(acct_rows[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_y(acct_rows[i], title_bottom + i * row_h);
+        lv_obj_set_height(acct_rows[i], row_h);
+
+        lv_label_set_text(acct_email[i], a->email);
+        lv_label_set_text_fmt(acct_used[i], "%d%%", a->used_pct);
+
+        int elapsed = 0;
+        if (a->reset_mins >= 0) {
+            elapsed = (int)((long)(ACCT_WINDOW_MIN - a->reset_mins) * 100 / ACCT_WINDOW_MIN);
+            if (elapsed < 0) elapsed = 0;
+            if (elapsed > 100) elapsed = 100;
+        }
+        bool over = a->used_pct > elapsed;          // burning faster than the clock
+        lv_color_t c = over ? COL_RED : COL_GREEN;
+        lv_bar_set_value(acct_bar[i], a->used_pct, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(acct_bar[i], c, LV_PART_INDICATOR);
+        lv_obj_set_style_text_color(acct_used[i], c, 0);
+
+        int mx = elapsed * ACCT_BAR_W / 100;        // clock marker position
+        lv_obj_align(acct_marker[i], LV_ALIGN_TOP_LEFT, mx - 1, 36);
+
+        char buf[24];
+        format_days_left(a->reset_mins, buf, sizeof(buf));
+        lv_label_set_text(acct_left[i], buf);
+
+        if (i == rec) lv_obj_clear_flag(acct_star[i], LV_OBJ_FLAG_HIDDEN);
+        else          lv_obj_add_flag(acct_star[i], LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 // Pick the usage-view sub-screen: pairing hint (BLE down), the idle "Zzz" screen
@@ -556,23 +710,27 @@ void ui_tick_anim(void) {
 static screen_t prev_non_splash_screen = SCREEN_USAGE;
 static void apply_battery_visibility(void) {
     if (!battery_img) return;
-    if (current_screen == SCREEN_SPLASH) lv_obj_add_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
-    else                                  lv_obj_clear_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
+    // Logo + battery chrome only on the usage screen; the splash and accounts
+    // screens own their full canvas.
+    if (current_screen == SCREEN_USAGE) lv_obj_clear_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
+    else                                 lv_obj_add_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
 }
 
 void ui_show_screen(screen_t screen) {
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+    if (acct_container) lv_obj_add_flag(acct_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
 
     switch (screen) {
-    case SCREEN_SPLASH:  splash_show(); break;
-    case SCREEN_USAGE:   lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_SPLASH:    splash_show(); break;
+    case SCREEN_USAGE:     lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_ACCOUNTS:  if (acct_container) lv_obj_clear_flag(acct_container, LV_OBJ_FLAG_HIDDEN); break;
     default: break;
     }
 
     if (logo_img) {
-        if (screen == SCREEN_SPLASH) lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
-        else                          lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+        if (screen == SCREEN_USAGE) lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+        else                         lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
     }
 
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
@@ -583,6 +741,15 @@ void ui_show_screen(screen_t screen) {
 void ui_toggle_splash(void) {
     if (current_screen == SCREEN_SPLASH) ui_show_screen(prev_non_splash_screen);
     else                                  ui_show_screen(SCREEN_SPLASH);
+}
+
+// PWR button: cycle usage -> accounts -> splash -> usage.
+void ui_cycle_screen(void) {
+    switch (current_screen) {
+    case SCREEN_USAGE:     ui_show_screen(SCREEN_ACCOUNTS); break;
+    case SCREEN_ACCOUNTS:  ui_show_screen(SCREEN_SPLASH); break;
+    default:               ui_show_screen(SCREEN_USAGE); break;
+    }
 }
 
 screen_t ui_get_current_screen(void) {
