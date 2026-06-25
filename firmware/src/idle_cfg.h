@@ -8,7 +8,7 @@
 #define IDLE_FADE_IN_MS             180      // wake fade-in (snappier)
 #define IDLE_FADE_STEP_MS           20       // tick interval per fade step
 
-#define DISPLAY_DEFAULT_BRIGHTNESS  200      // active-screen brightness
+#define DISPLAY_DEFAULT_BRIGHTNESS  150      // active-screen brightness
 
 // When false, the device never enters sleep while USB power is present (also
 // wakes from sleep when USB is plugged back in). Useful when sitting on a
