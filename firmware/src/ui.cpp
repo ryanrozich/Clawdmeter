@@ -128,6 +128,8 @@ static char s_account[64] = ""; // account email from the daemon payload (shown 
 static lv_obj_t* acct_container;
 static lv_obj_t* acct_title;
 static lv_obj_t* acct_rows[MAX_ACCOUNTS];      // the card panels
+static lv_obj_t* acct_live[MAX_ACCOUNTS];       // grey "LIVE" tag = active account
+static lv_obj_t* acct_use[MAX_ACCOUNTS];        // accent "USE THIS" tag = recommended
 static lv_obj_t* acct_email[MAX_ACCOUNTS];
 static lv_obj_t* acct_used[MAX_ACCOUNTS];
 static lv_obj_t* acct_bar[MAX_ACCOUNTS];
@@ -427,14 +429,14 @@ static void init_accounts_screen(lv_obj_t* scr) {
     lv_obj_set_style_pad_all(acct_container, 0, 0);
     lv_obj_clear_flag(acct_container, LV_OBJ_FLAG_SCROLLABLE);
 
-    acct_title = lv_label_create(acct_container);
-    lv_label_set_text(acct_title, "Accounts");
-    lv_obj_set_style_text_font(acct_title, &font_tiempos_34, 0);
-    lv_obj_set_style_text_color(acct_title, COL_TEXT, 0);
-    lv_obj_align(acct_title, LV_ALIGN_TOP_MID, 0, 14);
+    // No "Accounts" title — it's a known page behind the PWR button, so the
+    // vertical space goes to bigger, more glanceable cards instead.
+    acct_title = NULL;
 
-    // One card per account, matching the usage screen's panels. Inner padding
-    // 20px; bar spans the card width. Card height is set in ui_update_accounts.
+    // One card per account, matching the usage screen's panels. A top tag row
+    // carries LIVE (active) / USE THIS (recommended); name + used% below it;
+    // bar; then "Resets in …" and the week-elapsed readout. Bigger type now
+    // that names are short aliases. Card height/position set in ui_update.
     const int pad = 20;
     const int bar_w = L.content_w - 2 * pad;
     for (int i = 0; i < MAX_ACCOUNTS; i++) {
@@ -450,30 +452,56 @@ static void init_accounts_screen(lv_obj_t* scr) {
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
         acct_rows[i] = card;
 
-        lv_obj_t* email = lv_label_create(card);
+        // LIVE pill (grey = "you're on this now") — top-left, status only.
+        lv_obj_t* live = lv_label_create(card);
+        lv_label_set_text(live, "LIVE");
+        lv_obj_set_style_text_font(live, &font_styrene_14, 0);
+        lv_obj_set_style_text_color(live, COL_BG, 0);
+        lv_obj_set_style_bg_color(live, COL_DIM, 0);
+        lv_obj_set_style_bg_opa(live, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(live, 8, 0);
+        lv_obj_set_style_pad_hor(live, 9, 0);
+        lv_obj_set_style_pad_ver(live, 3, 0);
+        lv_obj_align(live, LV_ALIGN_TOP_LEFT, pad, 12);
+        acct_live[i] = live;
+
+        // USE THIS pill (accent = "where you should be") — top-right, action.
+        lv_obj_t* use = lv_label_create(card);
+        lv_label_set_text(use, "USE THIS");
+        lv_obj_set_style_text_font(use, &font_styrene_14, 0);
+        lv_obj_set_style_text_color(use, COL_BG, 0);
+        lv_obj_set_style_bg_color(use, COL_ACCENT, 0);
+        lv_obj_set_style_bg_opa(use, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(use, 8, 0);
+        lv_obj_set_style_pad_hor(use, 9, 0);
+        lv_obj_set_style_pad_ver(use, 3, 0);
+        lv_obj_align(use, LV_ALIGN_TOP_RIGHT, -pad, 12);
+        acct_use[i] = use;
+
+        lv_obj_t* email = lv_label_create(card);     // account name (bigger)
         lv_label_set_long_mode(email, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(email, L.content_w - 2 * pad - 80);
-        lv_obj_set_style_text_font(email, &font_styrene_24, 0);
+        lv_obj_set_width(email, L.content_w - 2 * pad - 110);
+        lv_obj_set_style_text_font(email, &font_styrene_28, 0);
         lv_obj_set_style_text_color(email, COL_TEXT, 0);
-        lv_obj_align(email, LV_ALIGN_TOP_LEFT, pad, 16);
+        lv_obj_align(email, LV_ALIGN_TOP_LEFT, pad, 44);
         acct_email[i] = email;
 
-        lv_obj_t* used = lv_label_create(card);
-        lv_obj_set_style_text_font(used, &font_styrene_28, 0);
-        lv_obj_align(used, LV_ALIGN_TOP_RIGHT, -pad, 12);
+        lv_obj_t* used = lv_label_create(card);       // used% (bigger, serif)
+        lv_obj_set_style_text_font(used, &font_tiempos_34, 0);
+        lv_obj_align(used, LV_ALIGN_TOP_RIGHT, -pad, 40);
         acct_used[i] = used;
 
         lv_obj_t* bar = lv_bar_create(card);
-        lv_obj_set_size(bar, bar_w, 18);
-        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, pad, 58);
+        lv_obj_set_size(bar, bar_w, 20);
+        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, pad, 88);
         lv_obj_set_style_bg_color(bar, COL_BAR_BG, LV_PART_MAIN);
-        lv_obj_set_style_radius(bar, 9, LV_PART_MAIN);
-        lv_obj_set_style_radius(bar, 9, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(bar, 10, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, 10, LV_PART_INDICATOR);
         lv_bar_set_range(bar, 0, 100);
         acct_bar[i] = bar;
 
         lv_obj_t* marker = lv_obj_create(card);    // tick = where the clock is
-        lv_obj_set_size(marker, 3, 28);
+        lv_obj_set_size(marker, 3, 30);
         lv_obj_set_style_bg_color(marker, COL_TEXT, 0);
         lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(marker, 0, 0);
@@ -481,16 +509,16 @@ static void init_accounts_screen(lv_obj_t* scr) {
         lv_obj_clear_flag(marker, LV_OBJ_FLAG_SCROLLABLE);
         acct_marker[i] = marker;
 
-        lv_obj_t* left = lv_label_create(card);    // "4d 1h left"
-        lv_obj_set_style_text_font(left, &font_styrene_16, 0);
+        lv_obj_t* left = lv_label_create(card);    // "Resets in 4d 1h"
+        lv_obj_set_style_text_font(left, &font_styrene_20, 0);
         lv_obj_set_style_text_color(left, COL_DIM, 0);
-        lv_obj_align(left, LV_ALIGN_TOP_LEFT, pad, 90);
+        lv_obj_align(left, LV_ALIGN_TOP_LEFT, pad, 116);
         acct_left[i] = left;
 
-        lv_obj_t* el = lv_label_create(card);      // "42% through"
-        lv_obj_set_style_text_font(el, &font_styrene_16, 0);
+        lv_obj_t* el = lv_label_create(card);      // "42% of week"
+        lv_obj_set_style_text_font(el, &font_styrene_20, 0);
         lv_obj_set_style_text_color(el, COL_DIM, 0);
-        lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -pad, 90);
+        lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -pad, 116);
         acct_elapsed[i] = el;
 
         lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN); // ui_update_accounts reveals
@@ -562,42 +590,52 @@ void ui_update(const UsageData* data) {
     strlcpy(s_account, data->account, sizeof(s_account));
 }
 
-static void format_days_left(int mins, char* buf, size_t len) {
-    if (mins < 0)            snprintf(buf, len, "--");
-    else if (mins >= 1440)   snprintf(buf, len, "%dd %dh left", mins / 1440, (mins % 1440) / 60);
-    else if (mins >= 60)     snprintf(buf, len, "%dh left", mins / 60);
-    else                     snprintf(buf, len, "%dm left", mins);
+static void format_resets_in(int mins, char* buf, size_t len) {
+    if (mins < 0)            snprintf(buf, len, "Resets soon");
+    else if (mins >= 1440)   snprintf(buf, len, "Resets in %dd %dh", mins / 1440, (mins % 1440) / 60);
+    else if (mins >= 60)     snprintf(buf, len, "Resets in %dh", mins / 60);
+    else                     snprintf(buf, len, "Resets in %dm", mins);
 }
 
 void ui_update_accounts(const AccountsData* data) {
     if (!data->valid) return;
     int n = data->count > MAX_ACCOUNTS ? MAX_ACCOUNTS : data->count;
 
-    // Recommendation: most "use-it-or-lose-it" = unused credits ÷ time left.
-    // High unused % with little time left = those weekly credits are about to
-    // reset unused, so burn them first.
+    // Recommendation = design-panel winner ("Burn-Rate"): the account wasting
+    // the most weekly credit per day if left idle.  score = unused% / days_left
+    // (days floored at 0.25 ≈ 6h so an about-to-reset account spikes finite).
+    // Cap-guard: skip accounts ≥85% used (near their wall, little left) unless
+    // every account is.  Tie-break: prefer the NON-active account so a real tie
+    // gives an actionable "switch" signal.
+    bool any_below_cap = false;
+    for (int i = 0; i < n; i++) if (data->accounts[i].used_pct < 85) any_below_cap = true;
     int rec = -1;
-    float best = -1.0f;
+    float best = -1e9f;
     for (int i = 0; i < n; i++) {
-        float days = data->accounts[i].reset_mins / 1440.0f;
+        const Account* a = &data->accounts[i];
+        if (any_below_cap && a->used_pct >= 85) continue;
+        float days = a->reset_mins / 1440.0f;
         if (days < 0.25f) days = 0.25f;
-        float score = (100.0f - data->accounts[i].used_pct) / days;
-        if (score > best) { best = score; rec = i; }
+        float score = (100.0f - a->used_pct) / days;
+        bool win = score > best + 0.5f;
+        if (!win && rec >= 0 && score > best - 0.5f &&
+            data->accounts[rec].active && !a->active) win = true;   // tie -> non-active
+        if (win) { best = score; rec = i; }
     }
 
     const int pad = 20;
     const int bar_w = L.content_w - 2 * pad;
-    int title_bottom = 60;
+    int top = 16;
     int gap = 12;
-    int avail = L.scr_h - title_bottom - 12;
+    int avail = L.scr_h - top - 12;
     int card_h = (avail - gap * (n - 1)) / (n > 0 ? n : 1);
-    if (card_h > 132) card_h = 132;
+    if (card_h > 150) card_h = 150;
 
     for (int i = 0; i < MAX_ACCOUNTS; i++) {
         if (i >= n) { lv_obj_add_flag(acct_rows[i], LV_OBJ_FLAG_HIDDEN); continue; }
         const Account* a = &data->accounts[i];
         lv_obj_clear_flag(acct_rows[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_y(acct_rows[i], title_bottom + i * (card_h + gap));
+        lv_obj_set_y(acct_rows[i], top + i * (card_h + gap));
         lv_obj_set_height(acct_rows[i], card_h);
 
         lv_label_set_text(acct_email[i], a->email);
@@ -616,14 +654,19 @@ void ui_update_accounts(const AccountsData* data) {
         lv_obj_set_style_text_color(acct_used[i], c, 0);
 
         int mx = pad + elapsed * bar_w / 100;       // clock marker over the bar
-        lv_obj_align(acct_marker[i], LV_ALIGN_TOP_LEFT, mx - 1, 53);
+        lv_obj_align(acct_marker[i], LV_ALIGN_TOP_LEFT, mx - 1, 83);
 
         char buf[24];
-        format_days_left(a->reset_mins, buf, sizeof(buf));
+        format_resets_in(a->reset_mins, buf, sizeof(buf));
         lv_label_set_text(acct_left[i], buf);
-        lv_label_set_text_fmt(acct_elapsed[i], "%d%% through", elapsed);
+        lv_label_set_text_fmt(acct_elapsed[i], "%d%% of week", elapsed);
 
-        // Recommendation: accent border on the most use-it-or-lose-it card.
+        // Two decoupled channels (design-panel guidance): grey LIVE = where you
+        // ARE, accent USE THIS + border = where you SHOULD be. Same card => stay.
+        if (a->active) lv_obj_clear_flag(acct_live[i], LV_OBJ_FLAG_HIDDEN);
+        else           lv_obj_add_flag(acct_live[i], LV_OBJ_FLAG_HIDDEN);
+        if (i == rec)  lv_obj_clear_flag(acct_use[i], LV_OBJ_FLAG_HIDDEN);
+        else           lv_obj_add_flag(acct_use[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_border_width(acct_rows[i], i == rec ? 3 : 0, 0);
     }
 }

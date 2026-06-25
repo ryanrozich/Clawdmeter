@@ -132,6 +132,7 @@ static bool parse_accounts(const char* json, AccountsData* out) {
         strlcpy(ac->email, a["e"] | "", sizeof(ac->email));
         ac->used_pct = a["u"] | 0;
         ac->reset_mins = a["wr"] | -1;
+        ac->active = (a["a"] | 0) != 0;
         out->count++;
     }
     out->valid = out->count > 0;

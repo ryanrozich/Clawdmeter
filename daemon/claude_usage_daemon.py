@@ -232,12 +232,23 @@ def _parse_countdown(s: str) -> int | None:
     return mins
 
 
+# Short display labels for the device cards (claude-swap has no alias feature,
+# so we map them here). Falls back to the email if not listed.
+ACCOUNT_ALIASES = {
+    "ryan@getadva.ai": "Adva",
+    "ryan.rozich@gmail.com": "Personal",
+    "ryan@rozich.com": "Rozich",
+}
+
+
 def read_accounts() -> list[dict]:
     """Per-account 7d pacing from claude-swap's cache, in slot order.
 
-    Each entry: {e: email, u: used_pct, wr: minutes-until-7d-reset}. The reset
-    countdown is aged forward from when claude-swap measured it so it stays
-    accurate even if the cache is a little stale.
+    Each entry: {e: display-name, u: used_pct, wr: minutes-until-7d-reset,
+    a: 1 if this is the currently-active account}. The reset countdown is aged
+    forward from when claude-swap measured it so it stays accurate even if the
+    cache is a little stale. "Active" is the live keychain account (authoritative)
+    rather than claude-swap's sequence file, which can lag.
     """
     try:
         seq = json.loads((SWAP_BACKUP / "sequence.json").read_text())
@@ -247,6 +258,7 @@ def read_accounts() -> list[dict]:
         return []
     measured_at = cache.get("timestamp", 0)
     data = cache.get("data", {})
+    active_email = read_account_email()   # the live, logged-in account
     now = time.time()
     out: list[dict] = []
     for slot in seq.get("sequence", []):
@@ -258,10 +270,12 @@ def read_accounts() -> list[dict]:
         if remaining is None:
             continue
         remaining = max(0, int(remaining - (now - measured_at) / 60))
+        email = info.get("email", "?")
         out.append({
-            "e": info.get("email", "?"),
+            "e": ACCOUNT_ALIASES.get(email, email),
             "u": int(round(seven.get("pct", 0))),
             "wr": remaining,
+            "a": 1 if active_email and email == active_email else 0,
         })
     return out
 

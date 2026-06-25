@@ -17,9 +17,10 @@ struct UsageData {
 // Multi-account pacing screen (fed by the daemon's {"accts":[...]} message).
 #define MAX_ACCOUNTS 6
 struct Account {
-    char email[40];
+    char email[40];      // short display name (alias) from the daemon
     int  used_pct;       // 7-day utilization, 0-100
     int  reset_mins;     // minutes until the 7-day window resets
+    bool active;         // true if this is the currently-logged-in account
 };
 struct AccountsData {
     Account accounts[MAX_ACCOUNTS];
