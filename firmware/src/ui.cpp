@@ -460,9 +460,9 @@ static void init_accounts_screen(lv_obj_t* scr) {
         lv_obj_align(used, LV_ALIGN_TOP_LEFT, pad, 8);
         acct_used[i] = used;
 
-        lv_obj_t* email = make_pill(card, "");        // name pill, right
-        lv_obj_set_style_text_font(email, &font_styrene_24, 0);
-        lv_obj_align(email, LV_ALIGN_TOP_RIGHT, -pad, 16);
+        lv_obj_t* email = make_pill(card, "");        // name pill, right (usage-pill size)
+        lv_obj_set_style_text_font(email, &font_styrene_28, 0);
+        lv_obj_align(email, LV_ALIGN_TOP_RIGHT, -pad, 14);
         acct_email[i] = email;
 
         // Gold ✶ recommendation star — placed just left of the name pill in
@@ -477,7 +477,7 @@ static void init_accounts_screen(lv_obj_t* scr) {
         // Elevated bar (lighter opaque track = raised pill, no border), centered.
         lv_obj_t* bar = lv_bar_create(card);
         lv_obj_set_size(bar, bar_w, 24);
-        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, pad, 70);
+        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, pad, 62);   // high, right under the number
         lv_obj_set_style_bg_color(bar, COL_BAR_BG, LV_PART_MAIN);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_radius(bar, 12, LV_PART_MAIN);
@@ -495,16 +495,16 @@ static void init_accounts_screen(lv_obj_t* scr) {
         lv_obj_clear_flag(marker, LV_OBJ_FLAG_SCROLLABLE);
         acct_marker[i] = marker;
 
-        lv_obj_t* left = lv_label_create(card);    // "Resets in 4d 1h"
-        lv_obj_set_style_text_font(left, &font_styrene_24, 0);
+        lv_obj_t* left = lv_label_create(card);    // "Resets in 4d 1h" (bigger now)
+        lv_obj_set_style_text_font(left, &font_styrene_28, 0);
         lv_obj_set_style_text_color(left, COL_DIM, 0);
-        lv_obj_align(left, LV_ALIGN_TOP_LEFT, pad, 108);
+        lv_obj_align(left, LV_ALIGN_TOP_LEFT, pad, 100);
         acct_left[i] = left;
 
         lv_obj_t* el = lv_label_create(card);      // just the week % e.g. "42%"
-        lv_obj_set_style_text_font(el, &font_styrene_24, 0);
+        lv_obj_set_style_text_font(el, &font_styrene_28, 0);
         lv_obj_set_style_text_color(el, COL_DIM, 0);
-        lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -pad, 108);
+        lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -pad, 100);
         acct_elapsed[i] = el;
 
         lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN); // ui_update_accounts reveals
@@ -640,7 +640,7 @@ void ui_update_accounts(const AccountsData* data) {
         lv_obj_set_style_text_color(acct_used[i], c, 0);   // big number = pace color
 
         int mx = pad + elapsed * bar_w / 100;       // clock marker over the bar
-        lv_obj_align(acct_marker[i], LV_ALIGN_TOP_LEFT, mx - 1, 65);
+        lv_obj_align(acct_marker[i], LV_ALIGN_TOP_LEFT, mx - 1, 57);
 
         char buf[24];
         format_resets_in(a->reset_mins, buf, sizeof(buf));
