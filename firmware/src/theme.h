@@ -8,6 +8,7 @@
 #define THEME_TEXT     lv_color_hex(0xfaf9f5)   // primary text
 #define THEME_DIM      lv_color_hex(0xb0aea5)   // secondary text
 #define THEME_ACCENT   lv_color_hex(0xd97757)   // brand terra-cotta
+#define THEME_GOLD     lv_color_hex(0xf2c14e)   // recommendation star (distinct from accent)
 #define THEME_GREEN    lv_color_hex(0x788c5d)
 #define THEME_AMBER    lv_color_hex(0xd97757)
 #define THEME_RED      lv_color_hex(0xc0392b)

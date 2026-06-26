@@ -95,6 +95,7 @@ static void compute_layout(const BoardCaps& c) {
 #define COL_TEXT      THEME_TEXT
 #define COL_DIM       THEME_DIM
 #define COL_ACCENT    THEME_ACCENT
+#define COL_GOLD      THEME_GOLD
 #define COL_GREEN     THEME_GREEN
 #define COL_AMBER     THEME_AMBER
 #define COL_RED       THEME_RED
@@ -451,34 +452,32 @@ static void init_accounts_screen(lv_obj_t* scr) {
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
         acct_rows[i] = card;
 
-        // ✶ recommendation star, left of the name (accent). Hidden unless this
-        // is the recommended account. The name reserves its slot so all names
-        // stay left-aligned whether or not the star is shown.
+        // Mirrors the usage card: BIG used% on the left (pace-colored), the
+        // account name as a pill on the right, an elevated bar centered below,
+        // then "Resets in …" and the week-% footer.
+        lv_obj_t* used = lv_label_create(card);       // big number, left
+        lv_obj_set_style_text_font(used, &font_styrene_48, 0);
+        lv_obj_align(used, LV_ALIGN_TOP_LEFT, pad, 8);
+        acct_used[i] = used;
+
+        lv_obj_t* email = make_pill(card, "");        // name pill, right
+        lv_obj_set_style_text_font(email, &font_styrene_24, 0);
+        lv_obj_align(email, LV_ALIGN_TOP_RIGHT, -pad, 16);
+        acct_email[i] = email;
+
+        // Gold ✶ recommendation star — placed just left of the name pill in
+        // ui_update (once the pill has sized to its text). Gold reads distinct
+        // from the terra-cotta "active" border.
         lv_obj_t* star = lv_label_create(card);
         lv_label_set_text(star, "\xE2\x9C\xB6");
         lv_obj_set_style_text_font(star, &font_mono_32, 0);
-        lv_obj_set_style_text_color(star, COL_ACCENT, 0);
-        lv_obj_align(star, LV_ALIGN_TOP_LEFT, pad, 28);
+        lv_obj_set_style_text_color(star, COL_GOLD, 0);
         acct_star[i] = star;
 
-        lv_obj_t* email = lv_label_create(card);     // account name (big)
-        lv_label_set_long_mode(email, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(email, L.content_w - 2 * pad - 42 - 110);
-        lv_obj_set_style_text_font(email, &font_styrene_28, 0);
-        lv_obj_set_style_text_color(email, COL_TEXT, 0);
-        lv_obj_align(email, LV_ALIGN_TOP_LEFT, pad + 42, 28);
-        acct_email[i] = email;
-
-        lv_obj_t* used = lv_label_create(card);       // used% (big, serif)
-        lv_obj_set_style_text_font(used, &font_tiempos_34, 0);
-        lv_obj_align(used, LV_ALIGN_TOP_RIGHT, -pad, 22);
-        acct_used[i] = used;
-
-        // Bar with the usage-screen's "elevated" treatment: a lighter, fully
-        // opaque track on the darker card reads as a raised pill, no border.
+        // Elevated bar (lighter opaque track = raised pill, no border), centered.
         lv_obj_t* bar = lv_bar_create(card);
         lv_obj_set_size(bar, bar_w, 24);
-        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, pad, 76);
+        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, pad, 70);
         lv_obj_set_style_bg_color(bar, COL_BAR_BG, LV_PART_MAIN);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_radius(bar, 12, LV_PART_MAIN);
@@ -499,13 +498,13 @@ static void init_accounts_screen(lv_obj_t* scr) {
         lv_obj_t* left = lv_label_create(card);    // "Resets in 4d 1h"
         lv_obj_set_style_text_font(left, &font_styrene_24, 0);
         lv_obj_set_style_text_color(left, COL_DIM, 0);
-        lv_obj_align(left, LV_ALIGN_TOP_LEFT, pad, 110);
+        lv_obj_align(left, LV_ALIGN_TOP_LEFT, pad, 108);
         acct_left[i] = left;
 
-        lv_obj_t* el = lv_label_create(card);      // "42% of week"
+        lv_obj_t* el = lv_label_create(card);      // just the week % e.g. "42%"
         lv_obj_set_style_text_font(el, &font_styrene_24, 0);
         lv_obj_set_style_text_color(el, COL_DIM, 0);
-        lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -pad, 110);
+        lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -pad, 108);
         acct_elapsed[i] = el;
 
         lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN); // ui_update_accounts reveals
@@ -638,22 +637,27 @@ void ui_update_accounts(const AccountsData* data) {
         lv_color_t c = over ? COL_RED : COL_GREEN;
         lv_bar_set_value(acct_bar[i], a->used_pct, LV_ANIM_OFF);
         lv_obj_set_style_bg_color(acct_bar[i], c, LV_PART_INDICATOR);
-        lv_obj_set_style_text_color(acct_used[i], c, 0);
+        lv_obj_set_style_text_color(acct_used[i], c, 0);   // big number = pace color
 
         int mx = pad + elapsed * bar_w / 100;       // clock marker over the bar
-        lv_obj_align(acct_marker[i], LV_ALIGN_TOP_LEFT, mx - 1, 71);
+        lv_obj_align(acct_marker[i], LV_ALIGN_TOP_LEFT, mx - 1, 65);
 
         char buf[24];
         format_resets_in(a->reset_mins, buf, sizeof(buf));
         lv_label_set_text(acct_left[i], buf);
-        lv_label_set_text_fmt(acct_elapsed[i], "%d%% of week", elapsed);
+        lv_label_set_text_fmt(acct_elapsed[i], "%d%%", elapsed);
 
-        // Two decoupled channels: accent BORDER = the account you're using now
-        // (active); ✶ next to the name = recommended (use-it-or-lose-it). Same
-        // card => you're on the right one; different => switch toward the star.
+        // accent BORDER = the account you're using now (active); gold ✶ left of
+        // the name = recommended. Same card => you're on the right one;
+        // different => switch toward the star.
         lv_obj_set_style_border_width(acct_rows[i], a->active ? 3 : 0, 0);
-        if (i == rec) lv_obj_clear_flag(acct_star[i], LV_OBJ_FLAG_HIDDEN);
-        else          lv_obj_add_flag(acct_star[i], LV_OBJ_FLAG_HIDDEN);
+        if (i == rec) {
+            lv_obj_update_layout(acct_email[i]);    // pill sized to its text
+            lv_obj_align_to(acct_star[i], acct_email[i], LV_ALIGN_OUT_LEFT_MID, -10, 0);
+            lv_obj_clear_flag(acct_star[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(acct_star[i], LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
 
