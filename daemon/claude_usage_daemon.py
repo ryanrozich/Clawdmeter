@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -32,9 +33,7 @@ TICK = 5
 SCAN_TIMEOUT = 8.0
 CONNECT_TIMEOUT = 20.0
 ACCOUNTS_POLL_INTERVAL = 300            # multi-account screen: 5 min (7d barely moves)
-ACCOUNTS_WINDOW_MIN = 7 * 24 * 60       # 7-day limit window length
-SWAP_BACKUP = Path.home() / ".claude-swap-backup"
-SWAP_BIN = Path.home() / ".local" / "bin" / "claude-swap"
+CLAUDE_METER_BIN = Path.home() / ".local" / "bin" / "claude-meter"
 
 # macOS: token lives in Keychain (service "Claude Code-credentials").
 # Linux: token lives in ~/.claude/.credentials.json.
@@ -185,99 +184,77 @@ def log_account_if_changed() -> None:
     _last_logged_email = email
 
 
-# --- Multi-account pacing (claude-swap) -------------------------------------
+# --- Multi-account pacing (claude-meter) ------------------------------------
 #
-# claude-swap manages several Claude accounts and caches each one's usage in
-# ~/.claude-swap-backup/cache/usage.json (per slot: seven_day pct + countdown),
-# with slot->email in sequence.json. The per-account OAuth tokens are encrypted
-# on disk, so rather than poll each account directly we shell out to
-# `claude-swap --list` (it re-polls every account and rewrites that cache),
-# then read the JSON. Drives the device's "Accounts" pacing screen — refreshed
-# slowly because 7d usage barely moves.
-def _swap_bin() -> str | None:
-    if SWAP_BIN.exists():
-        return str(SWAP_BIN)
-    return shutil.which("claude-swap")
+# claude-meter (github.com/coalesce-labs/claude-meter) reads a small config of
+# durable OAuth tokens and polls each account's usage directly from the
+# Anthropic usage API, emitting normalized JSON. We shell out to
+# `claude-meter poll --json`, then map each account to the device payload and
+# flag the active one by matching the live Keychain email. Read-only: nothing
+# here switches the active account (that's the whole reason we left claude-swap
+# behind — durable tokens can monitor but shouldn't drive real swaps). Drives
+# the device's "Accounts" pacing screen — refreshed slowly (7d barely moves).
+def _meter_bin() -> str | None:
+    if CLAUDE_METER_BIN.exists():
+        return str(CLAUDE_METER_BIN)
+    return shutil.which("claude-meter")
 
 
-async def refresh_accounts_cache() -> None:
-    """Best-effort: run `claude-swap --list` so usage.json is current."""
-    binary = _swap_bin()
+def _minutes_until(resets_at: str | None, now: float) -> int | None:
+    """ISO-8601 'resets_at' -> whole minutes from now (clamped >=0), or None."""
+    if not resets_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0, int((dt.timestamp() - now) / 60))
+
+
+async def poll_accounts() -> list[dict]:
+    """Run `claude-meter poll --json` and map to the device's accts payload.
+
+    Each entry: {e: alias, u: 7d used_pct, wr: minutes-until-7d-reset,
+    a: 1 if this is the live Keychain (active) account}. Accounts whose token
+    failed (ok=false) or lack a 7d window are skipped, so one dead account
+    never blanks the screen. The alias comes straight from claude-meter's
+    config; "active" is the live keychain account (authoritative).
+    """
+    binary = _meter_bin()
     if not binary:
-        return
-    proc = None
+        return []
     try:
         proc = await asyncio.create_subprocess_exec(
-            binary, "--list",
-            stdout=asyncio.subprocess.DEVNULL,
+            binary, "poll", "--json",
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await asyncio.wait_for(proc.wait(), timeout=30)
+        raw, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
     except (OSError, asyncio.TimeoutError) as e:
-        log(f"claude-swap refresh skipped: {e}")
-        if proc is not None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-
-
-def _parse_countdown(s: str) -> int | None:
-    """'5d 1h' / '4h 51m' / '21m' -> total minutes."""
-    if not s:
-        return None
-    mins = 0
-    for n, unit in re.findall(r"(\d+)\s*([dhm])", s):
-        mins += int(n) * {"d": 1440, "h": 60, "m": 1}[unit]
-    return mins
-
-
-# Short display labels for the device cards (claude-swap has no alias feature,
-# so we map them here). Falls back to the email if not listed.
-ACCOUNT_ALIASES = {
-    "ryan@getadva.ai": "Adva",
-    "ryan.rozich@gmail.com": "Personal",
-    "ryan@rozich.com": "Rozich",
-}
-
-
-def read_accounts() -> list[dict]:
-    """Per-account 7d pacing from claude-swap's cache, in slot order.
-
-    Each entry: {e: display-name, u: used_pct, wr: minutes-until-7d-reset,
-    a: 1 if this is the currently-active account}. The reset countdown is aged
-    forward from when claude-swap measured it so it stays accurate even if the
-    cache is a little stale. "Active" is the live keychain account (authoritative)
-    rather than claude-swap's sequence file, which can lag.
-    """
-    try:
-        seq = json.loads((SWAP_BACKUP / "sequence.json").read_text())
-        cache = json.loads((SWAP_BACKUP / "cache" / "usage.json").read_text())
-    except (OSError, json.JSONDecodeError) as e:
-        log(f"accounts: cache unreadable: {e}")
+        log(f"claude-meter poll skipped: {e}")
         return []
-    measured_at = cache.get("timestamp", 0)
-    data = cache.get("data", {})
+    try:
+        data = json.loads(raw.decode())
+    except (ValueError, UnicodeDecodeError) as e:
+        log(f"claude-meter: unreadable output: {e}")
+        return []
+
     active_email = read_account_email()   # the live, logged-in account
     now = time.time()
     out: list[dict] = []
-    for slot in seq.get("sequence", []):
-        info = seq.get("accounts", {}).get(str(slot))
-        if not info:
+    for acct in data.get("accounts", []):
+        if not acct.get("ok"):
             continue
-        # A slot key can be present but null when claude-swap's own refresh for
-        # that account failed (e.g. an expired token → 401). `.get(k, {})` would
-        # return that None, so coalesce before reaching in.
-        seven = (data.get(str(slot)) or {}).get("seven_day", {})
-        remaining = _parse_countdown(seven.get("countdown", ""))
-        if remaining is None:
+        seven = acct.get("seven_day") or {}
+        pct = seven.get("pct")
+        wr = _minutes_until(seven.get("resets_at"), now)
+        if pct is None or wr is None:
             continue
-        remaining = max(0, int(remaining - (now - measured_at) / 60))
-        email = info.get("email", "?")
+        email = acct.get("email") or ""
         out.append({
-            "e": ACCOUNT_ALIASES.get(email, email),
-            "u": int(round(seven.get("pct", 0))),
-            "wr": remaining,
+            "e": acct.get("alias") or email or "?",
+            "u": int(round(pct)),
+            "wr": wr,
             "a": 1 if active_email and email == active_email else 0,
         })
     return out
@@ -716,8 +693,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
             # own {"accts":[...]} message (the firmware routes on that key).
             if now - last_accounts_poll >= ACCOUNTS_POLL_INTERVAL:
                 last_accounts_poll = now
-                await refresh_accounts_cache()
-                accts = read_accounts()
+                accts = await poll_accounts()
                 if accts:
                     await session.write_payload({"accts": accts})
 
