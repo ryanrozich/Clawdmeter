@@ -265,7 +265,10 @@ def read_accounts() -> list[dict]:
         info = seq.get("accounts", {}).get(str(slot))
         if not info:
             continue
-        seven = data.get(str(slot), {}).get("seven_day", {})
+        # A slot key can be present but null when claude-swap's own refresh for
+        # that account failed (e.g. an expired token → 401). `.get(k, {})` would
+        # return that None, so coalesce before reaching in.
+        seven = (data.get(str(slot)) or {}).get("seven_day", {})
         remaining = _parse_countdown(seven.get("countdown", ""))
         if remaining is None:
             continue
