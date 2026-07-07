@@ -32,6 +32,7 @@ POLL_INTERVAL = 60
 TICK = 5
 SCAN_TIMEOUT = 8.0
 CONNECT_TIMEOUT = 20.0
+WAKE_GAP_THRESHOLD = 60.0   # inner wait is <=TICK; a bigger wall-clock jump = Mac slept
 ACCOUNTS_POLL_INTERVAL = 300            # multi-account screen: 5 min (7d barely moves)
 CLAUDE_METER_BIN = Path.home() / ".local" / "bin" / "claude-meter"
 
@@ -92,45 +93,141 @@ def _extract_access_token(blob: str) -> str | None:
     return None
 
 
-def _read_token_keychain() -> str | None:
+def _read_credentials_raw() -> str | None:
+    """Raw credentials blob — the macOS Keychain item or the Linux creds file."""
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                [
+                    "security",
+                    "find-generic-password",
+                    "-s",
+                    KEYCHAIN_SERVICE,
+                    "-a",
+                    getpass.getuser(),
+                    "-w",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.CalledProcessError as e:
+            log(f"Keychain read failed (rc={e.returncode}): {e.stderr.strip()}")
+            return None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            log(f"Keychain access error: {e}")
+            return None
+        return out.stdout
     try:
-        out = subprocess.run(
-            [
-                "security",
-                "find-generic-password",
-                "-s",
-                KEYCHAIN_SERVICE,
-                "-a",
-                getpass.getuser(),
-                "-w",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.CalledProcessError as e:
-        log(f"Keychain read failed (rc={e.returncode}): {e.stderr.strip()}")
-        return None
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        log(f"Keychain access error: {e}")
-        return None
-    return _extract_access_token(out.stdout)
-
-
-def _read_token_file() -> str | None:
-    try:
-        raw = CREDENTIALS_PATH.read_text()
+        return CREDENTIALS_PATH.read_text()
     except OSError as e:
         log(f"Error reading credentials: {e}")
         return None
-    return _extract_access_token(raw)
 
 
 def read_token() -> str | None:
-    if sys.platform == "darwin":
-        return _read_token_keychain()
-    return _read_token_file()
+    """The stored OAuth access token (no refresh). Prefer get_access_token()."""
+    raw = _read_credentials_raw()
+    return _extract_access_token(raw) if raw else None
+
+
+def _read_oauth() -> dict | None:
+    """The full claudeAiOauth blob (accessToken/refreshToken/expiresAt)."""
+    raw = _read_credentials_raw()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict):
+        oauth = data.get("claudeAiOauth")
+        if isinstance(oauth, dict):
+            return oauth
+        if isinstance(data.get("accessToken"), str):
+            return data
+    return None
+
+
+# --- OAuth token refresh (in-memory only) -----------------------------------
+#
+# Normally the daemon just reads the live Keychain access token, which Claude
+# Code keeps fresh while it runs. But if the Mac sleeps past the token's ~8h TTL
+# with no Claude Code process to refresh it, that token lapses and every usage
+# poll 401s until Claude Code next runs. To stay useful across overnight sleep,
+# the daemon refreshes the token itself from the Keychain's refresh token — but
+# keeps the result IN MEMORY ONLY. It never writes back to the Keychain (Claude
+# Code owns that item; rotating refresh tokens could otherwise contend). The
+# token endpoint is itself rate-limited, so refreshes are cooldown-limited.
+OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000   # treat as expired 5 min early
+REFRESH_COOLDOWN = 120.0                 # min seconds between token-endpoint hits
+_token_cache: dict = {"access": None, "expires_at_ms": 0, "last_attempt": 0.0}
+
+
+async def _refresh_access_token(refresh_token: str) -> tuple[str, int] | None:
+    """POST the token endpoint; return (access_token, expires_at_ms) or None."""
+    body = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": OAUTH_CLIENT_ID,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.post(
+                OAUTH_TOKEN_URL, json=body,
+                headers={"User-Agent": API_HEADERS_TEMPLATE["User-Agent"]},
+            )
+    except httpx.HTTPError as e:
+        log(f"Token refresh failed: {e}")
+        return None
+    if resp.status_code >= 400:
+        log(f"Token refresh HTTP {resp.status_code}: {resp.text[:160]}")
+        return None
+    try:
+        d = resp.json()
+        access = d["access_token"]
+        expires_at_ms = int(time.time() * 1000) + int(d["expires_in"]) * 1000
+    except (ValueError, KeyError, TypeError) as e:
+        log(f"Token refresh: unexpected response ({e})")
+        return None
+    return access, expires_at_ms
+
+
+async def get_access_token() -> str | None:
+    """A usable access token for the usage poll.
+
+    Prefers the live Keychain token (fresh whenever Claude Code is running). If
+    that has lapsed — typically after the Mac slept past the ~8h TTL — fall back
+    to an in-memory token, refreshing via the Keychain refresh token at most once
+    per REFRESH_COOLDOWN. Never writes back to the Keychain.
+    """
+    now = time.time()
+    now_ms = int(now * 1000)
+    oauth = _read_oauth() or {}
+    kc_access = oauth.get("accessToken")
+    kc_exp = oauth.get("expiresAt") or 0
+
+    # 1. A still-valid Keychain token always wins (Claude Code owns refreshing it).
+    if kc_access and kc_exp > now_ms + TOKEN_EXPIRY_BUFFER_MS:
+        return kc_access
+    # 2. A still-valid in-memory refreshed token.
+    if (_token_cache["access"]
+            and _token_cache["expires_at_ms"] > now_ms + TOKEN_EXPIRY_BUFFER_MS):
+        return _token_cache["access"]
+    # 3. Refresh (cooldown-limited so a bad window can't hammer the endpoint).
+    refresh_token = oauth.get("refreshToken")
+    if refresh_token and now - _token_cache["last_attempt"] >= REFRESH_COOLDOWN:
+        _token_cache["last_attempt"] = now
+        refreshed = await _refresh_access_token(refresh_token)
+        if refreshed:
+            _token_cache["access"], _token_cache["expires_at_ms"] = refreshed
+            log("Refreshed OAuth token in-memory (Keychain copy had lapsed)")
+            return _token_cache["access"]
+    # 4. Best effort: whatever the Keychain has (may 401, but no worse than before).
+    return kc_access
 
 
 # --- Account identity (which account are we actually polling?) ---------------
@@ -672,6 +769,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
     last_poll = 0.0
     last_accounts_poll = 0.0
     used_successfully = False
+    woke_from_sleep = False
     try:
         while client.is_connected and not stop_event.is_set():
             now = time.time()
@@ -679,7 +777,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
             if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
                 session.refresh_requested.clear()
                 log_account_if_changed()
-                token = read_token()
+                token = await get_access_token()
                 if not token:
                     log("No token; skipping poll")
                 else:
@@ -697,16 +795,32 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
                 if accts:
                     await session.write_payload({"accts": accts})
 
+            wait_start = time.time()
             try:
                 await asyncio.wait_for(session.refresh_requested.wait(), timeout=TICK)
             except asyncio.TimeoutError:
                 pass
+            # Sleep/wake guard: that wait returns within TICK in normal operation.
+            # A much larger wall-clock jump means the Mac slept and just woke, so
+            # the BLE link is now half-open — the device re-advertises ("Listening")
+            # while CoreBluetooth still reports it connected and our writes vanish.
+            # Bail out so the caller drops the stale handle and rescans fresh.
+            gap = time.time() - wait_start
+            if gap > WAKE_GAP_THRESHOLD:
+                log(f"Woke from sleep ({int(gap)}s gap); forcing a fresh BLE reconnect")
+                woke_from_sleep = True
+                break
     finally:
         try:
             await client.disconnect()
         except BleakError:
             pass
 
+    if woke_from_sleep:
+        # Return False so the macOS caller skips this stale handle on the next
+        # discover_target and falls through to a fresh scan of the re-advertising
+        # device (a True return would retrieveConnected the same ghost).
+        return False
     log("Device disconnected" if not stop_event.is_set() else "Stopping")
     return used_successfully
 
