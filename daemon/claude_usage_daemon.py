@@ -308,6 +308,19 @@ def _minutes_until(resets_at: str | None, now: float) -> int | None:
     return max(0, int((dt.timestamp() - now) / 60))
 
 
+def _acct_status(err: str) -> int:
+    """Map a claude-meter error string to a device status code.
+
+    1 = invalid token (401 / placeholder / no usable token — needs a good token),
+    2 = rate limited (429 — transient), 3 = unavailable (network/other).
+    """
+    if "401" in err or "usable token" in err:
+        return 1
+    if "429" in err:
+        return 2
+    return 3
+
+
 async def poll_accounts(active_usage: dict | None = None) -> list[dict]:
     """Build the accounts-screen payload: {e,u,wr,a} per account.
 
@@ -357,11 +370,23 @@ async def poll_accounts(active_usage: dict | None = None) -> list[dict]:
             seen_active = True
             continue
         if not acct.get("ok"):
+            # Include failed accounts with a status so the device shows feedback
+            # ("Invalid token" / "Rate limited") instead of hiding them.
+            out.append({
+                "e": acct.get("alias") or email or "?",
+                "a": 1 if is_active else 0,
+                "st": _acct_status(acct.get("error", "")),
+            })
             continue
         seven = acct.get("seven_day") or {}
         pct = seven.get("pct")
         wr = _minutes_until(seven.get("resets_at"), now)
         if pct is None or wr is None:
+            out.append({
+                "e": acct.get("alias") or email or "?",
+                "a": 1 if is_active else 0,
+                "st": 3,   # ok response but no 7d window → unavailable
+            })
             continue
         out.append({
             "e": acct.get("alias") or email or "?",

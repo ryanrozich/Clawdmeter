@@ -136,6 +136,7 @@ static lv_obj_t* acct_bar[MAX_ACCOUNTS];
 static lv_obj_t* acct_marker[MAX_ACCOUNTS];
 static lv_obj_t* acct_left[MAX_ACCOUNTS];       // "4d 1h left"
 static lv_obj_t* acct_elapsed[MAX_ACCOUNTS];    // "42% through"
+static lv_obj_t* acct_status[MAX_ACCOUNTS];     // error message in place of usage (invalid token / rate limited)
 
 // ---- Battery indicator (shared, on top) ----
 static lv_obj_t* battery_img;
@@ -507,6 +508,15 @@ static void init_accounts_screen(lv_obj_t* scr) {
         lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -pad, 100);
         acct_elapsed[i] = el;
 
+        // Shown in place of the number/bar/footer when this account has no usable
+        // token (invalid token / rate limited / unavailable) — so a failed
+        // account reads as actionable feedback instead of silently disappearing.
+        lv_obj_t* status = lv_label_create(card);
+        lv_obj_set_style_text_font(status, &font_styrene_28, 0);
+        lv_obj_align(status, LV_ALIGN_LEFT_MID, pad, 0);
+        lv_obj_add_flag(status, LV_OBJ_FLAG_HIDDEN);
+        acct_status[i] = status;
+
         lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN); // ui_update_accounts reveals
     }
 
@@ -594,11 +604,13 @@ void ui_update_accounts(const AccountsData* data) {
     // every account is.  Tie-break: prefer the NON-active account so a real tie
     // gives an actionable "switch" signal.
     bool any_below_cap = false;
-    for (int i = 0; i < n; i++) if (data->accounts[i].used_pct < 85) any_below_cap = true;
+    for (int i = 0; i < n; i++)
+        if (data->accounts[i].status == 0 && data->accounts[i].used_pct < 85) any_below_cap = true;
     int rec = -1;
     float best = -1e9f;
     for (int i = 0; i < n; i++) {
         const Account* a = &data->accounts[i];
+        if (a->status != 0) continue;   // no usable usage → can't recommend it
         if (any_below_cap && a->used_pct >= 85) continue;
         float days = a->reset_mins / 1440.0f;
         if (days < 0.25f) days = 0.25f;
@@ -624,7 +636,38 @@ void ui_update_accounts(const AccountsData* data) {
         lv_obj_set_y(acct_rows[i], top + i * (card_h + gap));
         lv_obj_set_height(acct_rows[i], card_h);
 
-        lv_label_set_text(acct_email[i], a->email);
+        lv_label_set_text(acct_email[i], a->email);   // name pill always shown
+
+        if (a->status != 0) {
+            // No usable token — show a status message where the number/bar go,
+            // so a failed account reads as feedback ("Rozich: Invalid token")
+            // rather than silently vanishing from the list.
+            lv_obj_add_flag(acct_used[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(acct_bar[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(acct_marker[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(acct_left[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(acct_elapsed[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(acct_star[i], LV_OBJ_FLAG_HIDDEN);
+            const char* msg = a->status == 1 ? "Invalid token"
+                            : a->status == 2 ? "Rate limited"
+                                             : "Unavailable";
+            lv_label_set_text(acct_status[i], msg);
+            lv_obj_set_style_text_color(acct_status[i],
+                                        a->status == 1 ? COL_RED : COL_DIM, 0);
+            lv_obj_clear_flag(acct_status[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_border_width(acct_rows[i], 0, 0);   // errored ≠ active
+            continue;
+        }
+
+        // Normal (ok) card — reveal the usage widgets in case this slot last
+        // rendered an error state, and hide the status label.
+        lv_obj_clear_flag(acct_used[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(acct_bar[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(acct_marker[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(acct_left[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(acct_elapsed[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(acct_status[i], LV_OBJ_FLAG_HIDDEN);
+
         lv_label_set_text_fmt(acct_used[i], "%d%%", a->used_pct);
 
         int elapsed = 0;

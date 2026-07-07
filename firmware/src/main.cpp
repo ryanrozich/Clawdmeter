@@ -133,6 +133,7 @@ static bool parse_accounts(const char* json, AccountsData* out) {
         ac->used_pct = a["u"] | 0;
         ac->reset_mins = a["wr"] | -1;
         ac->active = (a["a"] | 0) != 0;
+        ac->status = a["st"] | 0;   // 0=ok; 1=invalid token; 2=rate limited; 3=unavailable
         out->count++;
     }
     out->valid = out->count > 0;

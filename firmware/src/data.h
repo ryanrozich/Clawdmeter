@@ -21,6 +21,7 @@ struct Account {
     int  used_pct;       // 7-day utilization, 0-100
     int  reset_mins;     // minutes until the 7-day window resets
     bool active;         // true if this is the currently-logged-in account
+    int  status;         // 0=ok; 1=invalid token; 2=rate limited; 3=unavailable
 };
 struct AccountsData {
     Account accounts[MAX_ACCOUNTS];
