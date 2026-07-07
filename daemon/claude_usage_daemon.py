@@ -308,38 +308,54 @@ def _minutes_until(resets_at: str | None, now: float) -> int | None:
     return max(0, int((dt.timestamp() - now) / 60))
 
 
-async def poll_accounts() -> list[dict]:
-    """Run `claude-meter poll --json` and map to the device's accts payload.
+async def poll_accounts(active_usage: dict | None = None) -> list[dict]:
+    """Build the accounts-screen payload: {e,u,wr,a} per account.
 
-    Each entry: {e: alias, u: 7d used_pct, wr: minutes-until-7d-reset,
-    a: 1 if this is the live Keychain (active) account}. Accounts whose token
-    failed (ok=false) or lack a 7d window are skipped, so one dead account
-    never blanks the screen. The alias comes straight from claude-meter's
-    config; "active" is the live keychain account (authoritative).
+    The ACTIVE account is populated from the live main-screen reading
+    (`active_usage`, the last successful poll_api payload) whenever we have it —
+    that data is always fresh and needs no claude-meter token, so the account
+    you're actually using always shows even if its config token is stale. The
+    OTHER accounts come from `claude-meter poll --json` (durable tokens); any
+    whose token failed (ok=false) are skipped. Each entry: {e: alias, u: 7d
+    used_pct, wr: minutes-until-7d-reset, a: 1 if the live Keychain account}.
     """
-    binary = _meter_bin()
-    if not binary:
-        return []
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            binary, "poll", "--json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        raw, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except (OSError, asyncio.TimeoutError) as e:
-        log(f"claude-meter poll skipped: {e}")
-        return []
-    try:
-        data = json.loads(raw.decode())
-    except (ValueError, UnicodeDecodeError) as e:
-        log(f"claude-meter: unreadable output: {e}")
-        return []
-
     active_email = read_account_email()   # the live, logged-in account
     now = time.time()
+
+    # claude-meter output — may be empty (not installed / times out / all fail).
+    # Even on 429/401 it still lists each configured account (with its alias) as
+    # ok=false, so we can find the active one and overlay the live reading.
+    meter_accounts: list[dict] = []
+    binary = _meter_bin()
+    if binary:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                binary, "poll", "--json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            raw, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+            meter_accounts = json.loads(raw.decode()).get("accounts", [])
+        except (OSError, asyncio.TimeoutError) as e:
+            log(f"claude-meter poll skipped: {e}")
+        except (ValueError, UnicodeDecodeError) as e:
+            log(f"claude-meter: unreadable output: {e}")
+
     out: list[dict] = []
-    for acct in data.get("accounts", []):
+    seen_active = False
+    for acct in meter_accounts:
+        email = acct.get("email") or ""
+        is_active = bool(active_email and email == active_email)
+        if is_active and active_usage is not None:
+            # Live main-screen reading — always fresh, no token needed here.
+            out.append({
+                "e": acct.get("alias") or email or "?",
+                "u": int(active_usage.get("w", 0)),
+                "wr": int(active_usage.get("wr", 0)),
+                "a": 1,
+            })
+            seen_active = True
+            continue
         if not acct.get("ok"):
             continue
         seven = acct.get("seven_day") or {}
@@ -347,12 +363,21 @@ async def poll_accounts() -> list[dict]:
         wr = _minutes_until(seven.get("resets_at"), now)
         if pct is None or wr is None:
             continue
-        email = acct.get("email") or ""
         out.append({
             "e": acct.get("alias") or email or "?",
             "u": int(round(pct)),
             "wr": wr,
-            "a": 1 if active_email and email == active_email else 0,
+            "a": 1 if is_active else 0,
+        })
+
+    # Active account not in claude-meter's config at all? Still show it from the
+    # live reading — never hide the account actually in use.
+    if active_usage is not None and not seen_active and active_email:
+        out.append({
+            "e": active_usage.get("acct") or active_email,
+            "u": int(active_usage.get("w", 0)),
+            "wr": int(active_usage.get("wr", 0)),
+            "a": 1,
         })
     return out
 
@@ -768,6 +793,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
 
     last_poll = 0.0
     last_accounts_poll = 0.0
+    last_usage: dict | None = None
     used_successfully = False
     woke_from_sleep = False
     try:
@@ -783,6 +809,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
                 else:
                     payload = await poll_api(token)
                     if payload is not None:
+                        last_usage = payload
                         if await session.write_payload(payload):
                             last_poll = time.time()
                             used_successfully = True
@@ -791,7 +818,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
             # own {"accts":[...]} message (the firmware routes on that key).
             if now - last_accounts_poll >= ACCOUNTS_POLL_INTERVAL:
                 last_accounts_poll = now
-                accts = await poll_accounts()
+                accts = await poll_accounts(active_usage=last_usage)
                 if accts:
                     await session.write_payload({"accts": accts})
 
