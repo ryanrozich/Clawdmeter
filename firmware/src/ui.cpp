@@ -587,7 +587,12 @@ void ui_update(const UsageData* data) {
 }
 
 static void format_resets_in(int mins, char* buf, size_t len) {
-    if (mins < 0)            snprintf(buf, len, "Resets soon");
+    // A weekly window doesn't get a next reset timestamp from Anthropic until
+    // the first prompt of the new window — confirmed live: right after a
+    // rollover (or a fresh account's first-ever login), the usage API reports
+    // 0% used with no reset time at all. "Resets soon" was misleading there
+    // (nothing is imminent — it's just idle), so mins<0 reads as this instead.
+    if (mins < 0)            snprintf(buf, len, "Needs a prompt");
     else if (mins >= 1440)   snprintf(buf, len, "Resets in %dd %dh", mins / 1440, (mins % 1440) / 60);
     else if (mins >= 60)     snprintf(buf, len, "Resets in %dh", mins / 60);
     else                     snprintf(buf, len, "Resets in %dm", mins);
