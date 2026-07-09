@@ -34,7 +34,6 @@ SCAN_TIMEOUT = 8.0
 CONNECT_TIMEOUT = 20.0
 WAKE_GAP_THRESHOLD = 60.0   # inner wait is <=TICK; a bigger wall-clock jump = Mac slept
 ACCOUNTS_POLL_INTERVAL = 300            # multi-account screen: 5 min (7d barely moves)
-CLAUDE_METER_BIN = Path.home() / ".local" / "bin" / "claude-meter"
 
 # macOS: token lives in Keychain (service "Claude Code-credentials").
 # Linux: token lives in ~/.claude/.credentials.json.
@@ -43,17 +42,10 @@ CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 SAVED_ADDR_FILE = Path.home() / ".config" / "claude-usage-monitor" / "ble-address"
 CONFIG_FILE = Path.home() / ".config" / "claude-usage-monitor" / "config"
 
-API_URL = "https://api.anthropic.com/v1/messages"
+API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_HEADERS_TEMPLATE = {
-    "anthropic-version": "2023-06-01",
     "anthropic-beta": "oauth-2025-04-20",
-    "Content-Type": "application/json",
     "User-Agent": "claude-code/2.1.5",
-}
-API_BODY = {
-    "model": "claude-haiku-4-5-20251001",
-    "max_tokens": 1,
-    "messages": [{"role": "user", "content": "hi"}],
 }
 
 
@@ -281,129 +273,92 @@ def log_account_if_changed() -> None:
     _last_logged_email = email
 
 
-# --- Multi-account pacing (claude-meter) ------------------------------------
+# --- Multi-account pacing (claude-limits) -----------------------------------
 #
-# claude-meter (github.com/coalesce-labs/claude-meter) reads a small config of
-# durable OAuth tokens and polls each account's usage directly from the
-# Anthropic usage API, emitting normalized JSON. We shell out to
-# `claude-meter poll --json`, then map each account to the device payload and
-# flag the active one by matching the live Keychain email. Read-only: nothing
-# here switches the active account (that's the whole reason we left claude-swap
-# behind — durable tokens can monitor but shouldn't drive real swaps). Drives
-# the device's "Accounts" pacing screen — refreshed slowly (7d barely moves).
-def _meter_bin() -> str | None:
-    if CLAUDE_METER_BIN.exists():
-        return str(CLAUDE_METER_BIN)
-    return shutil.which("claude-meter")
+# claude-limits (github.com/coalesce-labs/claude-limits) is a standalone
+# fleet-wide usage-limit authority: one container per Claude account identity
+# (each with its own independent login), polling Anthropic directly and
+# publishing OTel metrics to the catalyst-otel stack. We read those metrics
+# back from Prometheus over Tailscale — the SAME source for every account,
+# including whichever one is active on this Mac, so there's no local-active-
+# account special case and no hardcoded alias map (claude-limits emits the
+# display alias itself as the claude_limits_account_alias label). Drives the
+# device's "Accounts" pacing screen — refreshed slowly (7d barely moves).
+PROMETHEUS_URL = os.environ.get("CLAUDE_LIMITS_PROMETHEUS_URL", "http://home:9098")
+
+# Prometheus deliberately carries no email label (PII stays off metrics per the
+# ratified telemetry contract), so matching "which account is active on THIS
+# Mac" against a fleet-wide account_uuid needs a small local correlation map.
+# This is NOT a display alias map (claude-limits already provides that) — just
+# enough to answer "is this me right now."
+ACCOUNT_UUID_BY_EMAIL = {
+    "ryan@rozich.com": "49f9f37d-dea6-4248-b656-b989add677ee",
+    "ryan.rozich@gmail.com": "3a3a9a22-d249-4420-94f8-57c7f6378d25",
+    "ryan@getadva.ai": "11543267-6b8f-4899-abcc-7442230dd324",
+}
 
 
-def _minutes_until(resets_at: str | None, now: float) -> int | None:
-    """ISO-8601 'resets_at' -> whole minutes from now (clamped >=0), or None."""
-    if not resets_at:
-        return None
-    try:
-        dt = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return max(0, int((dt.timestamp() - now) / 60))
+async def _prom_query(promql: str) -> list[dict]:
+    """Instant PromQL query -> Prometheus's `data.result` list."""
+    async with httpx.AsyncClient(timeout=8.0) as http:
+        resp = await http.get(f"{PROMETHEUS_URL}/api/v1/query", params={"query": promql})
+    resp.raise_for_status()
+    return resp.json().get("data", {}).get("result", [])
 
 
-def _acct_status(err: str) -> int:
-    """Map a claude-meter error string to a device status code.
-
-    1 = invalid token (401 / placeholder / no usable token — needs a good token),
-    2 = rate limited (429 — transient), 3 = unavailable (network/other).
+async def poll_accounts() -> list[dict]:
+    """Build the accounts-screen payload: {e,u,wr,a,st?} per account, sourced
+    entirely from claude-limits via Prometheus — one query result covers every
+    configured identity at once, active or not.
     """
-    if "401" in err or "usable token" in err:
-        return 1
-    if "429" in err:
-        return 2
-    return 3
-
-
-async def poll_accounts(active_usage: dict | None = None) -> list[dict]:
-    """Build the accounts-screen payload: {e,u,wr,a} per account.
-
-    The ACTIVE account is populated from the live main-screen reading
-    (`active_usage`, the last successful poll_api payload) whenever we have it —
-    that data is always fresh and needs no claude-meter token, so the account
-    you're actually using always shows even if its config token is stale. The
-    OTHER accounts come from `claude-meter poll --json` (durable tokens); any
-    whose token failed (ok=false) are skipped. Each entry: {e: alias, u: 7d
-    used_pct, wr: minutes-until-7d-reset, a: 1 if the live Keychain account}.
-    """
-    active_email = read_account_email()   # the live, logged-in account
+    active_email = read_account_email()   # the live, logged-in account on this Mac
+    active_uuid = ACCOUNT_UUID_BY_EMAIL.get(active_email or "")
     now = time.time()
 
-    # claude-meter output — may be empty (not installed / times out / all fail).
-    # Even on 429/401 it still lists each configured account (with its alias) as
-    # ok=false, so we can find the active one and overlay the live reading.
-    meter_accounts: list[dict] = []
-    binary = _meter_bin()
-    if binary:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                binary, "poll", "--json",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            raw, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-            meter_accounts = json.loads(raw.decode()).get("accounts", [])
-        except (OSError, asyncio.TimeoutError) as e:
-            log(f"claude-meter poll skipped: {e}")
-        except (ValueError, UnicodeDecodeError) as e:
-            log(f"claude-meter: unreadable output: {e}")
+    try:
+        auth_rows = await _prom_query("claude_limits_account_auth_active")
+        util_rows = await _prom_query(
+            'claude_limits_account_utilization_ratio{claude_limits_window="seven_day"}')
+        reset_rows = await _prom_query(
+            'claude_limits_account_reset_time_seconds{claude_limits_window="seven_day"}')
+    except (httpx.HTTPError, ValueError) as e:
+        log(f"claude-limits/Prometheus query failed: {e}")
+        return []
 
+    util_by_uuid = {r["metric"].get("user_account_uuid"): float(r["value"][1]) for r in util_rows}
+    reset_by_uuid = {r["metric"].get("user_account_uuid"): float(r["value"][1]) for r in reset_rows}
+
+    # auth_active is emitted every export cycle for every configured identity —
+    # the canonical "which accounts exist" list; utilization/reset are
+    # overlaid onto it (may be briefly absent for a just-logged-in account).
     out: list[dict] = []
-    seen_active = False
-    for acct in meter_accounts:
-        email = acct.get("email") or ""
-        is_active = bool(active_email and email == active_email)
-        if is_active and active_usage is not None:
-            # Live main-screen reading — always fresh, no token needed here.
-            out.append({
-                "e": acct.get("alias") or email or "?",
-                "u": int(active_usage.get("w", 0)),
-                "wr": int(active_usage.get("wr", 0)),
-                "a": 1,
-            })
-            seen_active = True
-            continue
-        if not acct.get("ok"):
-            # Include failed accounts with a status so the device shows feedback
-            # ("Invalid token" / "Rate limited") instead of hiding them.
-            out.append({
-                "e": acct.get("alias") or email or "?",
-                "a": 1 if is_active else 0,
-                "st": _acct_status(acct.get("error", "")),
-            })
-            continue
-        seven = acct.get("seven_day") or {}
-        pct = seven.get("pct")
-        wr = _minutes_until(seven.get("resets_at"), now)
-        if pct is None or wr is None:
-            out.append({
-                "e": acct.get("alias") or email or "?",
-                "a": 1 if is_active else 0,
-                "st": 3,   # ok response but no 7d window → unavailable
-            })
-            continue
-        out.append({
-            "e": acct.get("alias") or email or "?",
-            "u": int(round(pct)),
-            "wr": wr,
-            "a": 1 if is_active else 0,
-        })
+    for row in auth_rows:
+        m = row["metric"]
+        uuid = m.get("user_account_uuid")
+        alias = m.get("claude_limits_account_alias") or uuid or "?"
+        auth_ok = row["value"][1] == "1"
+        is_active = bool(active_uuid and uuid == active_uuid)
 
-    # Active account not in claude-meter's config at all? Still show it from the
-    # live reading — never hide the account actually in use.
-    if active_usage is not None and not seen_active and active_email:
-        out.append({
-            "e": active_usage.get("acct") or active_email,
-            "u": int(active_usage.get("w", 0)),
-            "wr": int(active_usage.get("wr", 0)),
-            "a": 1,
-        })
+        if not auth_ok:
+            out.append({"e": alias, "a": 1 if is_active else 0, "st": 1})   # invalid token
+            continue
+
+        util = util_by_uuid.get(uuid)
+        if util is None:
+            # The utilization series itself is missing — a genuinely broken/
+            # not-yet-emitted state, not a data quirk.
+            out.append({"e": alias, "a": 1 if is_active else 0, "st": 3})   # unavailable
+            continue
+
+        entry = {"e": alias, "u": int(round(util * 100)), "a": 1 if is_active else 0}
+        reset_epoch = reset_by_uuid.get(uuid)
+        if reset_epoch is not None:
+            entry["wr"] = max(0, int((reset_epoch - now) / 60))
+        # else: a completely fresh/unused window (0% utilization) genuinely has
+        # no resets_at yet — confirmed against the live API, not a bug. Omit
+        # "wr" rather than fabricate a countdown; the firmware defaults an
+        # absent reset to no pace marker, which is the honest rendering.
+        out.append(entry)
     return out
 
 
@@ -612,11 +567,17 @@ def add_clock_fields(payload: dict) -> None:
 
 
 async def poll_api(token: str) -> dict | None:
+    """Read-only usage poll. Was POST /v1/messages (max_tokens:1) reading
+    rate-limit HEADERS off a real inference call — a genuine ~1/min API hit
+    with a session-activity footprint on the active account, live 24/7.
+    GET /api/oauth/usage (the same read-only endpoint claude-meter and
+    claude-limits use) returns the same 5h/7d numbers directly in the JSON
+    body, with zero consumption and no inference session created."""
     headers = dict(API_HEADERS_TEMPLATE)
     headers["Authorization"] = f"Bearer {token}"
     try:
         async with httpx.AsyncClient(timeout=20.0) as http:
-            resp = await http.post(API_URL, headers=headers, json=API_BODY)
+            resp = await http.get(API_URL, headers=headers)
     except httpx.HTTPError as e:
         log(f"API call failed: {e}")
         return None
@@ -624,31 +585,42 @@ async def poll_api(token: str) -> dict | None:
         log(f"API HTTP {resp.status_code}: {resp.text[:200]}")
         return None
 
-    def hdr(name: str, default: str = "0") -> str:
-        return resp.headers.get(name, default)
+    try:
+        data = resp.json()
+    except ValueError as e:
+        log(f"API response unreadable: {e}")
+        return None
 
     now = time.time()
 
-    def reset_minutes(reset_ts: str) -> int:
+    def reset_minutes(resets_at: str | None) -> int:
+        if not resets_at:
+            return 0
         try:
-            r = float(reset_ts)
+            dt = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
         except ValueError:
             return 0
-        mins = (r - now) / 60.0
+        mins = (dt.timestamp() - now) / 60.0
         return int(round(mins)) if mins > 0 else 0
 
-    def pct(util: str) -> int:
-        try:
-            return int(round(float(util) * 100))
-        except ValueError:
-            return 0
+    def pct(block: dict) -> int:
+        util = block.get("utilization")
+        return int(round(util)) if util is not None else 0
 
+    five_hour = data.get("five_hour") or {}
+    seven_day = data.get("seven_day") or {}
+    session_pct = pct(five_hour)
     payload = {
-        "s": pct(hdr("anthropic-ratelimit-unified-5h-utilization")),
-        "sr": reset_minutes(hdr("anthropic-ratelimit-unified-5h-reset")),
-        "w": pct(hdr("anthropic-ratelimit-unified-7d-utilization")),
-        "wr": reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset")),
-        "st": hdr("anthropic-ratelimit-unified-5h-status", "unknown"),
+        "s": session_pct,
+        "sr": reset_minutes(five_hour.get("resets_at")),
+        "w": pct(seven_day),
+        "wr": reset_minutes(seven_day.get("resets_at")),
+        # The old "allowed"/"limited" string came from a rate-limit response
+        # header this endpoint doesn't have; the firmware parses this field
+        # but doesn't currently render it (data.h status[16], unused in
+        # ui.cpp), so a simple derived value keeps it meaningful without
+        # fabricating detail the API no longer gives us.
+        "st": "limited" if session_pct >= 100 else "allowed",
         "ok": True,
         "acct": read_account_email() or "",   # which account this reading is for
     }
@@ -818,7 +790,6 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
 
     last_poll = 0.0
     last_accounts_poll = 0.0
-    last_usage: dict | None = None
     used_successfully = False
     woke_from_sleep = False
     try:
@@ -834,7 +805,6 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
                 else:
                     payload = await poll_api(token)
                     if payload is not None:
-                        last_usage = payload
                         if await session.write_payload(payload):
                             last_poll = time.time()
                             used_successfully = True
@@ -843,7 +813,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
             # own {"accts":[...]} message (the firmware routes on that key).
             if now - last_accounts_poll >= ACCOUNTS_POLL_INTERVAL:
                 last_accounts_poll = now
-                accts = await poll_accounts(active_usage=last_usage)
+                accts = await poll_accounts()
                 if accts:
                     await session.write_payload({"accts": accts})
 
