@@ -115,6 +115,24 @@ node tools/convert_to_c.js      # → firmware/src/splash_animations.h
 
 Each animation has a per-animation 10-color RGB565 palette. Cell values 0..9 index it. Default boot screen.
 
+## Git workflow — this fork is customized, never upstreamed
+
+This repo is a clone of `HermannBjorgvin/Clawdmeter` (`origin`), with the
+user's own fork `ryanrozich/Clawdmeter` as a second remote (`fork`). The
+personal customizations in this repo (boot-to-usage, the accounts/pacing
+screen, brightness tuning, the daemon rewrite, etc.) are **never** intended to
+go back to `origin` — no upstream PR, ever.
+
+**Policy: local work is committed directly to `fork`'s own `main` branch.**
+Do not leave customization commits parked on a long-lived side branch (e.g. an
+old `local/boot-to-usage`) — merge/fast-forward them into `fork/main` so
+`ryanrozich/Clawdmeter`'s `main` is the one authoritative branch with
+everything on it. `origin/main` (upstream) can still be pulled from
+occasionally to pick up real upstream fixes (e.g. the daemon connect-timeout
+fix, #91) — merge or rebase those into `fork/main` as needed; the point is
+just that `fork/main`, not a side branch, is where this project actually
+lives day to day.
+
 ## User profile / preferences
 
 See `~/.claude/projects/.../memory/` files for persistent context (user is an embedded-beginner senior dev, brand-conscious, prefers iterative UI refinement, dislikes me authoring my own art when third-party assets are intended). Always read those memory files at session start.
