@@ -681,7 +681,12 @@ void ui_update_accounts(const AccountsData* data) {
             if (elapsed < 0) elapsed = 0;
             if (elapsed > 100) elapsed = 100;
         }
-        bool over = a->used_pct > elapsed;          // burning faster than the clock
+        // Right after a weekly reset, elapsed% is near zero, so almost any
+        // usage reads as "over pace" — not a meaningful signal that early.
+        // Skip the red/green pace comparison for the window's first 5%
+        // (~8.4h of the 7-day window) and stay green during the grace period.
+        const int PACE_GRACE_PCT = 5;
+        bool over = elapsed >= PACE_GRACE_PCT && a->used_pct > elapsed;
         lv_color_t c = over ? COL_RED : COL_GREEN;
         lv_bar_set_value(acct_bar[i], a->used_pct, LV_ANIM_OFF);
         lv_obj_set_style_bg_color(acct_bar[i], c, LV_PART_INDICATOR);
